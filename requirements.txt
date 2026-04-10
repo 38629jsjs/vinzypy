@@ -5,3 +5,4 @@ aiohttp
 psycopg2-binary
 Pillow
 pyzbar
+libzbar0
