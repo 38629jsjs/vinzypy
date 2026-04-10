@@ -1,6 +1,6 @@
 pyTelegramBotAPI
 telethon
-psycopg2-binary
 aiohttp
+psycopg2-binary
 Pillow
 pyzbar
