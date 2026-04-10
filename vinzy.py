@@ -3,7 +3,6 @@
 # ENGINE: TITAN-ASYNC + NEONDB (POSTGRESQL) INTEGRATION
 # PLATFORM: OPTIMIZED FOR KOYEB / VPS / HEROKU
 # =========================================================================
-
 import os
 import sys
 import time
@@ -12,27 +11,51 @@ import asyncio
 import logging
 from datetime import datetime
 
+# --- Database & HTTP ---
+import asyncpg
+import aiohttp
+
+# --- pyTelegramBotAPI (The UI) ---
+from telebot.async_telebot import AsyncTeleBot
+from telebot import types as bot_types
+from telebot.apihelper import ApiTelegramException
+
+# --- Telethon (The Worker) ---
+from telethon import TelegramClient, functions, errors, types as tl_types
+from telethon.sessions import StringSession
+
+# --- Image & QR Processing ---
+from PIL import Image
+import pyzbar.pyzbar as pyzbar
+
 # --- DEPENDENCY CHECKS ---
 try:
     import asyncpg
     from telebot.async_telebot import AsyncTeleBot
     from telebot import types as bot_types
-    from telebot.asyncio_helper import ApiTelegramException
+    from telebot.apihelper import ApiTelegramException  # <--- FIXED THIS LINE
     from telethon import TelegramClient, functions, types as tl_types, errors
     from telethon.sessions import StringSession
 except ImportError as e:
     print(f"CRITICAL ERROR: Missing library. {e}")
-    print("Run: pip install telethon pyTelegramBotAPI asyncpg")
+    print("Run: pip install telethon pyTelegramBotAPI asyncpg aiohttp Pillow pyzbar")
     sys.exit(1)
 
-# =========================================================================
-# --- 1. CONFIGURATION & ENVIRONMENT (ENTERPRISE LOAD) ---
-# =========================================================================
+# --- 1. ADVANCED LOGGING SYSTEM (DEFINED FIRST) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("Vinzy_V8_Engine")
+
+# --- 2. CONFIGURATION & ENVIRONMENT (USES THE LOGGER) ---
 
 # Strict validation for Environment Variables
 def get_env(var_name, default=None, is_int=False):
     value = os.environ.get(var_name, default)
     if value is None or value == "":
+        # This will now work because logger is already defined above
         logger.critical(f"MISSING CONFIG: {var_name} is not set in environment!")
         sys.exit(1)
     return int(value) if is_int else value
@@ -49,22 +72,16 @@ try:
     VERIFY_GROUP = get_env("VERIFY_GROUP", is_int=True)
     
 except Exception as e:
-    print(f"BOOT ERROR: Failed to parse configuration. Check your env vars. | {e}")
+    # Use print here as a fallback in case logger fails
+    print(f"BOOT ERROR: Failed to parse configuration. | {e}")
     sys.exit(1)
+
+# Initialize Bot Instance
+bot = AsyncTeleBot(BOT_TOKEN)
 
 # --- DEPENDENCY VERIFICATION ---
 REQUIRED_LIBS = ["telethon", "pyTelegramBotAPI", "asyncpg"]
 logger.info(f"System Check: Initializing Vinzy Engine v8.4 with {len(REQUIRED_LIBS)} modules.")
-# --- 2. ADVANCED LOGGING SYSTEM ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("Vinzy_V8_Engine")
-
-bot = AsyncTeleBot(BOT_TOKEN)
-
 # --- 3. AESTHETICS & UI CONSTANTS ---
 VINZY_ASCII = """
 <code>
