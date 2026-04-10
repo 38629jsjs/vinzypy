@@ -1,2 +1,6 @@
-telethon
 pyTelegramBotAPI
+telethon
+psycopg2-binary
+aiohttp
+Pillow
+pyzbar
