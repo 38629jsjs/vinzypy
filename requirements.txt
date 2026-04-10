@@ -1,5 +1,6 @@
 pyTelegramBotAPI
 telethon
+asyncpg
 aiohttp
 psycopg2-binary
 Pillow
