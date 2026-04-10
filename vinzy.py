@@ -24,21 +24,16 @@ from telebot.apihelper import ApiTelegramException
 from telethon import TelegramClient, functions, errors, types as tl_types
 from telethon.sessions import StringSession
 
-# --- Image & QR Processing ---
-from PIL import Image
-import pyzbar.pyzbar as pyzbar
-
 # --- DEPENDENCY CHECKS ---
 try:
     import asyncpg
     from telebot.async_telebot import AsyncTeleBot
     from telebot import types as bot_types
-    from telebot.apihelper import ApiTelegramException  # <--- FIXED THIS LINE
+    from telebot.apihelper import ApiTelegramException
     from telethon import TelegramClient, functions, types as tl_types, errors
     from telethon.sessions import StringSession
 except ImportError as e:
-    print(f"CRITICAL ERROR: Missing library. {e}")
-    print("Run: pip install telethon pyTelegramBotAPI asyncpg aiohttp Pillow pyzbar")
+    print(f"CRITICAL ERROR: Missing core library. {e}")
     sys.exit(1)
 
 # --- 1. ADVANCED LOGGING SYSTEM (DEFINED FIRST) ---
