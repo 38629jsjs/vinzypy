@@ -886,29 +886,37 @@ async def handle_dynamic_inputs(message):
     if not user_data or user_data['bot_state'] != "WAITING_FOR_TARGET":
         return
 
-    target_channel = message.text.replace("@", "").strip()
-    
-    # Update target and transition state
-    await db.execute_query(
-        "UPDATE vinzy_engine_users SET target_channel = $1, bot_state = $2 WHERE user_id = $3",
-        target_channel, "SELECTING_SEGMENT", user_id
-    )
-    
-    # Inline UI for Segment targeting
-    markup = bot_types.InlineKeyboardMarkup()
-    markup.row(
-        bot_types.InlineKeyboardButton("🔥 ACTIVE", callback_data="select_segment_ACTIVE"),
-        bot_types.InlineKeyboardButton("💤 INACTIVE", callback_data="select_segment_INACTIVE")
-    )
-    
-    setup_text = (
-        f"✅ <b>Bridge Configuration Success!</b>\n"
-        f"{UI_LINE}\n"
-        f"📤 <b>Source:</b> <code>@{user_data['source_group']}</code>\n"
-        f"📥 <b>Target:</b> <code>@{target_channel}</code>\n\n"
-        f"<b>Select your member targeting strategy:</b>"
-    )
-    await bot.send_message(message.chat.id, setup_text, reply_markup=markup, parse_mode="HTML")
+    try:
+        target_channel = message.text.replace("@", "").strip()
+        
+        # Update target and transition state
+        await db.execute_query(
+            "UPDATE vinzy_engine_users SET target_channel = $1, bot_state = $2 WHERE user_id = $3",
+            target_channel, "SELECTING_SEGMENT", user_id
+        )
+        
+        # CRITICAL RE-FETCH: Ensures user_data contains the source_group for the UI
+        user_data = await db.get_user(user_id)
+        
+        # Inline UI for Segment targeting
+        markup = bot_types.InlineKeyboardMarkup()
+        markup.row(
+            bot_types.InlineKeyboardButton("🔥 ACTIVE", callback_data="select_segment_ACTIVE"),
+            bot_types.InlineKeyboardButton("💤 INACTIVE", callback_data="select_segment_INACTIVE")
+        )
+        
+        setup_text = (
+            f"✅ <b>Bridge Configuration Success!</b>\n"
+            f"{UI_LINE}\n"
+            f"📤 <b>Source:</b> <code>@{user_data['source_group']}</code>\n"
+            f"📥 <b>Target:</b> <code>@{target_channel}</code>\n\n"
+            f"<b>Select your member targeting strategy:</b>"
+        )
+        await bot.send_message(message.chat.id, setup_text, reply_markup=markup, parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Stage 2 UI Crash: {e}")
+        await bot.send_message(message.chat.id, "🚨 <b>Engine Error:</b> UI Generation failed. Check logs.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("select_segment_"))
 async def handle_segment_selection(call):
@@ -939,7 +947,6 @@ async def handle_segment_selection(call):
 async def execute_smm_sequence(call):
     """
     STAGE 4: ENGINE IGNITION & WORKER DISPATCH
-    Spawns the background task to handle high-latency Telethon operations.
     """
     user_id = call.from_user.id
     await db.connect()
@@ -962,8 +969,10 @@ async def execute_smm_sequence(call):
 async def background_invite_task(chat_id, user_data):
     """
     STAGE 5: CORE WORKER EXECUTION (THE ENGINE)
-    Handles scraping, filtering, auto-joining, and the invitation loop.
     """
+    # Import necessary types for the filter logic
+    from telethon import functions, types as tl_types
+    
     client = TelegramClient(StringSession(user_data['session_string']), API_ID, API_HASH)
     
     try:
@@ -975,7 +984,7 @@ async def background_invite_task(chat_id, user_data):
         try:
             await client(functions.channels.JoinChannelRequest(channel=user_data['source_group']))
         except Exception:
-            pass # Already in or restricted, proceed to scrape attempt
+            pass 
 
         # HANDSHAKE: Resolve entities for both nodes
         source_ent = await client.get_entity(user_data['source_group'])
@@ -1021,10 +1030,13 @@ async def background_invite_task(chat_id, user_data):
 
             # UI Refresh every 5 users
             if (index + 1) % 5 == 0 or (index + 1) == total_count:
-                bar = generate_progress_bar(index + 1, total_count)
+                # Progress bar calculation (simple version)
+                filled = int((index + 1) / total_count * 10)
+                bar = "🟢" * filled + "⚪" * (10 - filled)
+                
                 progress_ui = (
                     f"🚀 <b>Vinzy Engine Activity</b>\n{UI_LINE}\n"
-                    f"📊 <b>Progress:</b> {index + 1}/{total_count}\n{bar}\n\n"
+                    f"📊 <b>Progress:</b> {index + 1}/{total_count}\n<code>{bar}</code>\n\n"
                     f"✅ Success: <code>{success}</code> | ❌ Restricted: <code>{fail}</code>\n"
                     f"🛡️ <b>Stealth:</b> Active (V8.8)"
                 )
@@ -1051,7 +1063,6 @@ async def background_invite_task(chat_id, user_data):
         # Revert state and decommission client
         await db.update_state(user_data['user_id'], "IDLE")
         await client.disconnect()
-
 # =========================================================================
 # --- 9. APPLICATION RUNTIME & CRASH PROTECTION ---
 # =========================================================================
