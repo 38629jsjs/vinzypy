@@ -128,7 +128,7 @@ try:
     
     # NeonDB Connection String
     DATABASE_URL = get_env("DATABASE_URL")
-    
+    db = VinzyDatabaseManager(DATABASE_URL)
     # Infrastructure & Telemetry Groups
     ADMIN_LOG_GROUP = get_env("LOGGER_GROUP", is_int=True)
     VERIFY_GROUP = get_env("VERIFY_GROUP", is_int=True)
