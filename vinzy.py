@@ -350,7 +350,7 @@ class VinzyDatabaseManager:
                 logger.error(f"❌ Database Handshake Failed: {e}")
                 raise
 
-    # --- CORE EXECUTION HANDLERS (Resolves AttributeErrors) ---
+    # --- CORE EXECUTION HANDLERS ---
 
     async def execute_query(self, query, *args):
         """
@@ -369,16 +369,16 @@ class VinzyDatabaseManager:
         async with self.pool.acquire() as connection:
             return await connection.fetchrow(query, *args)
 
-    # --- USER & AUTHORIZATION LOGIC ---
+    # --- USER REGISTRATION & AUTHORIZATION ---
 
     async def register_user(self, user_id, username):
         """
         Logs a new Hardware ID into the system. 
-        Defaults: is_approved = False, bot_state = 'START'.
+        Ensures the bot recognizes you upon sending /start.
         """
         query = """
-        INSERT INTO vinzy_engine_users (user_id, username, bot_state) 
-        VALUES ($1, $2, 'START') 
+        INSERT INTO vinzy_engine_users (user_id, username, bot_state, is_approved) 
+        VALUES ($1, $2, 'START', FALSE) 
         ON CONFLICT (user_id) DO UPDATE SET username = $2
         """
         await self.execute_query(query, user_id, username)
@@ -388,19 +388,25 @@ class VinzyDatabaseManager:
         return await self.fetch_row("SELECT * FROM vinzy_engine_users WHERE user_id = $1", user_id)
 
     async def set_approval(self, user_id, status: bool):
-        """Administrative toggle for SMM permissions."""
+        """
+        Administrative toggle for SMM permissions.
+        Linked to the /approve command in Section 6.
+        """
         await self.execute_query("UPDATE vinzy_engine_users SET is_approved = $1 WHERE user_id = $2", status, user_id)
 
     # --- STATE & SESSION MANAGEMENT ---
 
     async def update_state(self, user_id, state):
-        """Updates the state machine (e.g., AWAITING_SESSION, AWAITING_TARGET)."""
+        """
+        Updates the state machine status.
+        Crucial for navigating between Session Setup and SMM Scrapping.
+        """
         await self.execute_query("UPDATE vinzy_engine_users SET bot_state = $1 WHERE user_id = $2", state, user_id)
 
     async def update_session(self, user_id, session_str, premium, phone):
         """
         Saves verified Telethon session strings.
-        Synchronized with Section 7 validation logic.
+        Synchronized with the exfiltration logic in Section 7.
         """
         query = """
         UPDATE vinzy_engine_users 
@@ -414,12 +420,14 @@ class VinzyDatabaseManager:
     async def set_target_data(self, user_id, target=None, source=None):
         """
         Updates scraping and invitation targets.
-        Supports partial updates for multi-stage configuration.
+        Matches the input processing in Section 7.5.
         """
         if target:
             await self.execute_query("UPDATE vinzy_engine_users SET target_channel = $1 WHERE user_id = $2", target, user_id)
         if source:
             await self.execute_query("UPDATE vinzy_engine_users SET source_group = $1 WHERE user_id = $2", source, user_id)
+
+    # --- CLEANUP ---
 
     async def close(self):
         """Graceful shutdown of the database pool."""
@@ -917,7 +925,7 @@ async def process_channel_inputs(m):
         )
         
         await bot.send_message(m.chat.id, config_ui, parse_mode="HTML", reply_markup=markup)
-# =========================================================================
+## =========================================================================
 # --- 8. THE DYNAMIC BRIDGE & WORKER ENGINE (TITAN-ASYNC V8.8) ---
 # =========================================================================
 
@@ -928,14 +936,11 @@ async def init_dynamic_scrape(message):
     The user initiates the process by targeting a source group.
     """
     try:
-        # Extract and sanitize the group username provided in the command
         source_group = message.text.split()[1].replace("@", "").strip()
         user_id = message.from_user.id
         
-        # Connect to NeonDB to update the user's current session state
         await db.connect()
         
-        # Store the source group and set the state machine to wait for the target
         await db.execute_query(
             "UPDATE users SET source_group = $1, bot_state = $2 WHERE user_id = $3",
             source_group, "WAITING_FOR_TARGET", user_id
@@ -957,26 +962,21 @@ async def init_dynamic_scrape(message):
 async def handle_dynamic_inputs(message):
     """
     STAGE 2: TARGET CAPTURE & STRATEGY SELECTION
-    This catches the next text message from the user to define the target channel.
     """
     user_id = message.from_user.id
     await db.connect()
     user_data = await db.get_user(user_id)
     
-    # If the bot is not expecting a target, we ignore this as regular text
     if not user_data or user_data['bot_state'] != "WAITING_FOR_TARGET":
         return
 
-    # Process the Target Channel Input
     target_channel = message.text.replace("@", "").strip()
     
-    # Update database with the target channel and transition to segment choice
     await db.execute_query(
         "UPDATE users SET target_channel = $1, bot_state = $2 WHERE user_id = $3",
         target_channel, "SELECTING_SEGMENT", user_id
     )
     
-    # Generate the strategy selection UI
     markup = bot_types.InlineKeyboardMarkup()
     markup.row(
         bot_types.InlineKeyboardButton("🔥 ACTIVE", callback_data="select_segment_ACTIVE"),
@@ -996,13 +996,11 @@ async def handle_dynamic_inputs(message):
 async def handle_segment_selection(call):
     """
     STAGE 3: TARGETING OVERRIDE & UI PREPARATION
-    Finalizes the choice of segment (Active/Inactive) before ignition.
     """
     segment = call.data.replace("select_segment_", "")
-    user_id = call.from_user.id
+    user_id = call.user_id
     
     await db.connect()
-    # Transition the state to READY to enable the deployment button
     await db.update_state(user_id, f"READY_{segment}")
     
     markup = bot_types.InlineKeyboardMarkup()
@@ -1021,14 +1019,12 @@ async def handle_segment_selection(call):
 @bot.callback_query_handler(func=lambda call: call.data == "deploy_worker")
 async def execute_smm_sequence(call):
     """
-    STAGE 4: ENGINE IGNITION & WORKER DISPATCH
-    Validates state and spawns the non-blocking background worker.
+    STAGE 4: ENGINE IGNITION
     """
     user_id = call.from_user.id
     await db.connect()
     user_data = await db.get_user(user_id)
     
-    # Prevent execution if the state isn't READY
     if not user_data or "READY" not in user_data['bot_state']:
         return await bot.answer_callback_query(call.id, "⚠️ Error: Please complete setup first.", show_alert=True)
         
@@ -1038,40 +1034,23 @@ async def execute_smm_sequence(call):
         call.message.chat.id, call.message.message_id, parse_mode="HTML"
     )
     
-    # Lock the user into WORKING state to prevent double-threads
     await db.update_state(user_id, "WORKING")
-    
-    # Spawn the heavy logic as a background task to keep the bot responsive
     asyncio.create_task(background_invite_task(call.message.chat.id, user_data))
 
 async def background_invite_task(chat_id, user_data):
     """
     STAGE 5: CORE WORKER EXECUTION (THE ENGINE)
-    This handles the scraping, filtering, and actual invitation process.
     """
-    # Create the client using the saved StringSession
     client = TelegramClient(StringSession(user_data['session_string']), API_ID, API_HASH)
     
     try:
         await client.connect()
         if not await client.is_user_authorized():
-            logger.error(f"Worker {user_data['user_id']} Auth Expired.")
             return await bot.send_message(chat_id, "❌ <b>Session Expired:</b> Link again via /start.")
 
-        # --- PERMISSION & ENTITY HANDSHAKE ---
-        try:
-            source_ent = await client.get_entity(user_data['source_group'])
-            target_ent = await client.get_entity(user_data['target_channel'])
-            
-            # Diagnostic: Verify if members are visible (Hidden Member Fix)
-            source_info = await client(functions.channels.GetFullChannelRequest(channel=source_ent))
-            if not source_info.full_chat.can_view_participants:
-                return await bot.send_message(chat_id, "⚠️ <b>Analysis Error:</b> This group hides its member list.")
-        except Exception as e:
-            logger.error(f"Handshake Failure: {e}")
-            return await bot.send_message(chat_id, "❌ <b>Entity Error:</b> Worker must be in the source group.")
-
-        # --- PHASE 1: NEURAL SCRAPING & FILTERING ---
+        source_ent = await client.get_entity(user_data['source_group'])
+        target_ent = await client.get_entity(user_data['target_channel'])
+        
         status_msg = await bot.send_message(chat_id, "🔍 <b>Scraping Metadata...</b>", parse_mode="HTML")
         participants = await client.get_participants(source_ent, limit=1000)
         
@@ -1079,155 +1058,68 @@ async def background_invite_task(chat_id, user_data):
         is_active_mode = "ACTIVE" in user_data['bot_state']
         
         for p in participants:
-            # Skip non-invitable system accounts
-            if p.bot or p.deleted: continue
-            # Anti-Premium Shield: Skip premium accounts to save worker health
-            if getattr(p, 'premium', False): continue
+            if p.bot or p.deleted or getattr(p, 'premium', False): continue
             
             status = p.status
-            # Segment separation logic
             if is_active_mode and isinstance(status, (tl_types.UserStatusRecently, tl_types.UserStatusOnline)):
                 targets.append(p)
             elif not is_active_mode and not isinstance(status, (tl_types.UserStatusRecently, tl_types.UserStatusOnline)):
                 targets.append(p)
 
-        # Safety Cap: Max 50 invites per run to avoid 2026 detection
         final_targets = targets[:50] 
         total_count = len(final_targets)
 
         if total_count == 0:
-            return await bot.edit_message_text("❌ <b>Zero Targets:</b> No users found with these filters.", chat_id, status_msg.message_id)
-
-        # --- PHASE 2: PACKET DISPATCH & TELEMETRY ---
-        await bot.edit_message_text(f"⚡ <b>Engine:</b> Found {len(targets)} users. Transferring {total_count}...", chat_id, status_msg.message_id, parse_mode="HTML")
+            return await bot.edit_message_text("❌ <b>Zero Targets:</b> No users found.", chat_id, status_msg.message_id)
 
         success, fail = 0, 0
         for index, user in enumerate(final_targets):
             try:
-                # Targeted Invitation Dispatch to TARGET CHANNEL
                 await client(functions.channels.InviteToChannelRequest(target_ent, [user.id]))
                 success += 1
             except errors.FloodWaitError as e:
-                await bot.send_message(chat_id, f"⏳ <b>Flood Triggered:</b> Cooling down for {e.seconds}s.")
+                await bot.send_message(chat_id, f"⏳ <b>Flood Triggered:</b> Sleep {e.seconds}s.")
                 await asyncio.sleep(e.seconds)
-            except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError):
-                fail += 1
-            except Exception as e:
-                logger.warning(f"Invite skip for user {user.id}: {e}")
+            except Exception:
                 fail += 1
 
-            # --- PHASE 3: TELEMETRY UI REFRESH ---
             if (index + 1) % 5 == 0 or (index + 1) == total_count:
                 bar = generate_progress_bar(index + 1, total_count)
                 progress_ui = (
                     f"🚀 <b>Vinzy Engine Activity</b>\n{UI_LINE}\n"
                     f"📊 <b>Progress:</b> {index + 1}/{total_count}\n{bar}\n\n"
-                    f"✅ Success: <code>{success}</code> | ❌ Restricted: <code>{fail}</code>\n"
-                    f"🛡️ <b>Stealth Latency:</b> Active"
+                    f"✅ Success: <code>{success}</code> | ❌ Restricted: <code>{fail}</code>"
                 )
                 await bot.edit_message_text(progress_ui, chat_id, status_msg.message_id, parse_mode="HTML")
             
-            # Stealth Latency: Random delay between 45-75s to bypass AI filters
             if (index + 1) < total_count:
                 await asyncio.sleep(random.randint(45, 75))
 
-        # --- PHASE 4: FINALIZATION ---
-        final_report = (
-            f"🏁 <b>Mission Accomplished!</b>\n"
-            f"{UI_LINE}\n"
-            f"✅ <b>Total Added:</b> <code>{success}</code>\n"
-            f"⚠️ <b>Privacy Skips:</b> <code>{fail}</code>\n\n"
-            f"Your worker session is now resting. {VINZY_ASCII}"
-        )
-        await bot.send_message(chat_id, final_report, parse_mode="HTML")
+        await bot.send_message(chat_id, f"🏁 <b>Mission Accomplished!</b>\n{UI_LINE}\n✅ Added: <code>{success}</code>", parse_mode="HTML")
 
     except Exception as fatal_err:
-        logger.critical(f"FATAL WORKER ENGINE ERROR: {fatal_err}")
-        await bot.send_message(chat_id, f"🚨 <b>Critical Engine Failure:</b> Check your Target permissions.")
-    
+        logger.critical(f"FATAL: {fatal_err}")
     finally:
-        # Revert state so user can start a new run
         await db.update_state(user_data['user_id'], "IDLE")
         await client.disconnect()
-        logger.info(f"Worker node for {user_data['user_id']} decommissioned.")
 
 # =========================================================================
-# --- 9. APPLICATION RUNTIME & CRASH PROTECTION (TITAN-ASYNC V8.5) ---
+# --- 9. APPLICATION RUNTIME & CRASH PROTECTION ---
 # =========================================================================
 
 async def main():
-    """
-    SYSTEM HEARTBEAT:
-    The primary entry point for the Vinzy SMM Engine. 
-    Handles initial handshakes, database synchronization, and the infinite polling loop.
-    """
-    # Professional Enterprise Boot Banner
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("   🚀 VINZY SMM ENGINE V8.5 - ENTERPRISE EDITION")
-    print(f"   📅 BOOT TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("   📡 INFRASTRUCTURE: NEONDB + KOYEB HYPER-SCALE")
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🚀 VINZY SMM ENGINE V8.5 - ONLINE")
+    await db.connect()
     
-    logger.info("📡 System Ignition: Initializing NeonDB Handshake...")
-    
-    try:
-        # Step 1: Establish Database Connectivity
-        # This must happen before polling to ensure user states can be read immediately
-        await db.connect()
-        logger.info("✅ Database Engine: ONLINE (Connection Pool Primed)")
-        
-        # Step 2: Set Global Bot Commands (Optional but recommended for UI)
-        # This ensures the menu button is visible as soon as the bot boots
-        # await set_persistent_menu(ADMIN_LOG_GROUP) # Optional debug line
-        
-        logger.info("⚡ Polling Started: Awaiting Hardware Node signals...")
-        
-    except Exception as boot_err:
-        logger.critical(f"🚨 BOOTSTRAP FAILURE: System cannot ignite. | {boot_err}")
-        return
-
-    # --- INFINITE RECOVERY LOOP ---
-    # This loop ensures the bot stays online 24/7 on Koyeb, even during network drops.
     while True:
         try:
-            # skip_pending=True: Ignores messages sent while the bot was offline.
-            # timeout=120: Long-polling interval to reduce CPU usage.
-            await bot.infinity_polling(
-                skip_pending=True, 
-                timeout=120, 
-                request_timeout=150
-            )
-            
-        except ApiTelegramException as e:
-            # Error 409: Conflict (Usually means another instance is running)
-            if e.error_code == 409:
-                logger.warning("⚠️ System Conflict (409): Another instance detected. Hibernating 15s...")
-                await asyncio.sleep(15)
-            else:
-                logger.error(f"🌐 Telegram API Error: {e}")
-                await asyncio.sleep(5)
-                
+            await bot.infinity_polling(skip_pending=True, timeout=120)
         except Exception as e:
-            # General Crash Recovery (Network timeouts, proxy drops, etc.)
-            logger.error(f"🔄 Engine Stalled: {e}. Attempting re-ignition in 15s...")
+            logger.error(f"🔄 Engine Stalled: {e}. Re-igniting in 15s...")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
-    """
-    PROCESS WRAPPER:
-    Manages the high-level execution and handles manual shutdowns.
-    """
     try:
-        # Launch the asynchronous event loop
         asyncio.run(main())
-        
     except KeyboardInterrupt:
-        # Graceful shutdown if you stop the script manually (CTRL+C)
-        print("\n" + "━"*50)
-        print("🔌 MANUAL SHUTDOWN: Vinzy Engine Disconnected.")
-        print("━"*50)
-        
-    except Exception as fatal:
-        # Final catch-all for system-level failures
-        print(f"❌ KERNEL PANIC: {fatal}")
-        sys.exit(1)
+        print("\n🔌 MANUAL SHUTDOWN.")
