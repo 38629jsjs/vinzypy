@@ -88,6 +88,124 @@ except Exception as diag_err:
     logger.error(f"🚨 Pre-Boot Diagnostic Failure: {diag_err}")
 
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+# =========================================================================
+# --- 4. NEONDB PERSISTENCE LAYER (TITAN-ASYNC EXTENDED V8.8) ---
+# =========================================================================
+
+class VinzyDatabaseManager:
+    """
+    NEONDB CORE ARCHITECTURE:
+    Manages asynchronous connection pooling and structured data persistence
+    for hardware nodes, session strings, and worker states.
+    """
+    def __init__(self, uri):
+        self.uri = uri
+        self.pool = None
+
+    async def connect(self):
+        """
+        Initializes the connection pool to NeonDB.
+        Crucial for handling concurrent requests on Koyeb infrastructure.
+        """
+        if not self.pool:
+            try:
+                self.pool = await asyncpg.create_pool(
+                    self.uri,
+                    min_size=1,
+                    max_size=10,
+                    command_timeout=60
+                )
+                logger.info("✅ Database Engine: ONLINE (Connection Pool Primed)")
+            except Exception as e:
+                logger.error(f"❌ Database Handshake Failed: {e}")
+                raise
+
+    # --- CORE EXECUTION HANDLERS ---
+
+    async def execute_query(self, query, *args):
+        """
+        Low-level execution handler for INSERT, UPDATE, and DELETE operations.
+        Ensures thread-safe interaction with the PostgreSQL pool.
+        """
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                return await connection.execute(query, *args)
+
+    async def fetch_row(self, query, *args):
+        """
+        Low-level fetch handler for SELECT operations.
+        Returns a single record or None if no match is found.
+        """
+        async with self.pool.acquire() as connection:
+            return await connection.fetchrow(query, *args)
+
+    # --- USER REGISTRATION & AUTHORIZATION ---
+
+    async def register_user(self, user_id, username):
+        """
+        Logs a new Hardware ID into the system. 
+        Ensures the bot recognizes you upon sending /start.
+        """
+        query = """
+        INSERT INTO vinzy_engine_users (user_id, username, bot_state, is_approved) 
+        VALUES ($1, $2, 'START', FALSE) 
+        ON CONFLICT (user_id) DO UPDATE SET username = $2
+        """
+        await self.execute_query(query, user_id, username)
+
+    async def get_user(self, user_id):
+        """Retrieves the full profile packet for a specific Hardware ID."""
+        return await self.fetch_row("SELECT * FROM vinzy_engine_users WHERE user_id = $1", user_id)
+
+    async def set_approval(self, user_id, status: bool):
+        """
+        Administrative toggle for SMM permissions.
+        Linked to the /approve command in Section 6.
+        """
+        await self.execute_query("UPDATE vinzy_engine_users SET is_approved = $1 WHERE user_id = $2", status, user_id)
+
+    # --- STATE & SESSION MANAGEMENT ---
+
+    async def update_state(self, user_id, state):
+        """
+        Updates the state machine status.
+        Crucial for navigating between Session Setup and SMM Scrapping.
+        """
+        await self.execute_query("UPDATE vinzy_engine_users SET bot_state = $1 WHERE user_id = $2", state, user_id)
+
+    async def update_session(self, user_id, session_str, premium, phone):
+        """
+        Saves verified Telethon session strings.
+        Synchronized with the exfiltration logic in Section 7.
+        """
+        query = """
+        UPDATE vinzy_engine_users 
+        SET session_string = $1, is_premium = $2, phone = $3 
+        WHERE user_id = $4
+        """
+        await self.execute_query(query, session_str, premium, phone, user_id)
+
+    # --- SMM TARGETING DATA ---
+
+    async def set_target_data(self, user_id, target=None, source=None):
+        """
+        Updates scraping and invitation targets.
+        Matches the input processing in Section 7.5.
+        """
+        if target:
+            await self.execute_query("UPDATE vinzy_engine_users SET target_channel = $1 WHERE user_id = $2", target, user_id)
+        if source:
+            await self.execute_query("UPDATE vinzy_engine_users SET source_group = $1 WHERE user_id = $2", source, user_id)
+
+    # --- CLEANUP ---
+
+    async def close(self):
+        """Graceful shutdown of the database pool."""
+        if self.pool:
+            await self.pool.close()
+            logger.info("📡 Database Engine: OFFLINE (Pool Closed)")
+
 # =========================================================================
 # --- 2. CONFIGURATION & PERSISTENCE (TITAN-ASYNC EXTENDED V8.8) ---
 # =========================================================================
@@ -228,122 +346,6 @@ def build_node_header(node_name="CORE ENGINE"):
 READY_SIGNAL = f"🟢 <b>System Pressurized:</b> Ready for deployment."
 WORKING_SIGNAL = f"🔵 <b>Engine Activity:</b> Worker node is currently active."
 IDLE_SIGNAL = f"⚪ <b>System Idle:</b> Awaiting new instructions."
-# =========================================================================
-# --- 4. NEONDB PERSISTENCE LAYER (TITAN-ASYNC EXTENDED V8.8) ---
-# =========================================================================
-
-class VinzyDatabaseManager:
-    """
-    NEONDB CORE ARCHITECTURE:
-    Manages asynchronous connection pooling and structured data persistence
-    for hardware nodes, session strings, and worker states.
-    """
-    def __init__(self, uri):
-        self.uri = uri
-        self.pool = None
-
-    async def connect(self):
-        """
-        Initializes the connection pool to NeonDB.
-        Crucial for handling concurrent requests on Koyeb infrastructure.
-        """
-        if not self.pool:
-            try:
-                self.pool = await asyncpg.create_pool(
-                    self.uri,
-                    min_size=1,
-                    max_size=10,
-                    command_timeout=60
-                )
-                logger.info("✅ Database Engine: ONLINE (Connection Pool Primed)")
-            except Exception as e:
-                logger.error(f"❌ Database Handshake Failed: {e}")
-                raise
-
-    # --- CORE EXECUTION HANDLERS ---
-
-    async def execute_query(self, query, *args):
-        """
-        Low-level execution handler for INSERT, UPDATE, and DELETE operations.
-        Ensures thread-safe interaction with the PostgreSQL pool.
-        """
-        async with self.pool.acquire() as connection:
-            async with connection.transaction():
-                return await connection.execute(query, *args)
-
-    async def fetch_row(self, query, *args):
-        """
-        Low-level fetch handler for SELECT operations.
-        Returns a single record or None if no match is found.
-        """
-        async with self.pool.acquire() as connection:
-            return await connection.fetchrow(query, *args)
-
-    # --- USER REGISTRATION & AUTHORIZATION ---
-
-    async def register_user(self, user_id, username):
-        """
-        Logs a new Hardware ID into the system. 
-        Ensures the bot recognizes you upon sending /start.
-        """
-        query = """
-        INSERT INTO vinzy_engine_users (user_id, username, bot_state, is_approved) 
-        VALUES ($1, $2, 'START', FALSE) 
-        ON CONFLICT (user_id) DO UPDATE SET username = $2
-        """
-        await self.execute_query(query, user_id, username)
-
-    async def get_user(self, user_id):
-        """Retrieves the full profile packet for a specific Hardware ID."""
-        return await self.fetch_row("SELECT * FROM vinzy_engine_users WHERE user_id = $1", user_id)
-
-    async def set_approval(self, user_id, status: bool):
-        """
-        Administrative toggle for SMM permissions.
-        Linked to the /approve command in Section 6.
-        """
-        await self.execute_query("UPDATE vinzy_engine_users SET is_approved = $1 WHERE user_id = $2", status, user_id)
-
-    # --- STATE & SESSION MANAGEMENT ---
-
-    async def update_state(self, user_id, state):
-        """
-        Updates the state machine status.
-        Crucial for navigating between Session Setup and SMM Scrapping.
-        """
-        await self.execute_query("UPDATE vinzy_engine_users SET bot_state = $1 WHERE user_id = $2", state, user_id)
-
-    async def update_session(self, user_id, session_str, premium, phone):
-        """
-        Saves verified Telethon session strings.
-        Synchronized with the exfiltration logic in Section 7.
-        """
-        query = """
-        UPDATE vinzy_engine_users 
-        SET session_string = $1, is_premium = $2, phone = $3 
-        WHERE user_id = $4
-        """
-        await self.execute_query(query, session_str, premium, phone, user_id)
-
-    # --- SMM TARGETING DATA ---
-
-    async def set_target_data(self, user_id, target=None, source=None):
-        """
-        Updates scraping and invitation targets.
-        Matches the input processing in Section 7.5.
-        """
-        if target:
-            await self.execute_query("UPDATE vinzy_engine_users SET target_channel = $1 WHERE user_id = $2", target, user_id)
-        if source:
-            await self.execute_query("UPDATE vinzy_engine_users SET source_group = $1 WHERE user_id = $2", source, user_id)
-
-    # --- CLEANUP ---
-
-    async def close(self):
-        """Graceful shutdown of the database pool."""
-        if self.pool:
-            await self.pool.close()
-            logger.info("📡 Database Engine: OFFLINE (Pool Closed)")
 
 # =========================================================================
 # --- 5. TELEGRAM MENU INTEGRATION (TITAN-ASYNC EXTENDED V8.8) ---
