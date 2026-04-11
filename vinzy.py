@@ -1015,38 +1015,96 @@ async def background_invite_task(chat_id, user_data):
 
         if total_count == 0:
             return await bot.edit_message_text("❌ <b>Zero Targets:</b> No matching users found.", chat_id, status_msg.message_id)
-
-        # PHASE 2: Packet Dispatch & Telemetry
+# =========================================================================
+        # --- PHASE 2: PACKET DISPATCH & TELEMETRY (TITAN-ASYNC V8.8) ---
+        # =========================================================================
+        
         success, fail = 0, 0
+        total_count = len(final_targets)
+
+        # Initial Telemetry Update
+        await bot.edit_message_text(
+            f"🚀 <b>Engine Ignited:</b> Found {total_count} targets.\n"
+            f"<i>Starting Stealth Dispatch Sequence...</i>",
+            chat_id, status_msg.message_id, parse_mode="HTML"
+        )
+
         for index, user in enumerate(final_targets):
             try:
-                await client(functions.channels.InviteToChannelRequest(target_ent, [user.id]))
+                # 1. THE DISPATCH: Execute the invitation via Telethon
+                # We use the target_ent resolved in Handshake
+                await client(functions.channels.InviteToChannelRequest(
+                    target_ent, 
+                    [user.id]
+                ))
+                
                 success += 1
+                logger.info(f"Vinzy Engine | Success: {user.id} added to bridge.")
+                
             except errors.FloodWaitError as e:
-                await bot.send_message(chat_id, f"⏳ <b>Flood Triggered:</b> Cooling for {e.seconds}s.")
+                # 2. FLOOD PROTECTION: Telegram-mandated cooldown
+                flood_warning = (
+                    f"⏳ <b>Flood Triggered:</b> Telegram requires a pause.\n"
+                    f"<b>Cooling down:</b> <code>{e.seconds}</code> seconds."
+                )
+                await bot.send_message(chat_id, flood_warning, parse_mode="HTML")
                 await asyncio.sleep(e.seconds)
-            except Exception:
+                
+            except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError):
+                # 3. PRIVACY FILTER: User settings block non-contact invites
                 fail += 1
+                logger.warning(f"Vinzy Engine | Skip: Privacy restricted for {user.id}")
+                
+            except errors.PeerFloodError:
+                # 4. CRITICAL: Account is being flagged for too many invites
+                await bot.send_message(chat_id, "🚨 <b>Peer Flood:</b> Account restricted by Telegram. Stopping run.")
+                break
+                
+            except Exception as e:
+                # 5. GENERAL EXCEPTION: Logs other errors without killing the loop
+                fail += 1
+                logger.error(f"Vinzy Engine | Dispatch Error: {e}")
 
-            # UI Refresh every 5 users
-            if (index + 1) % 5 == 0 or (index + 1) == total_count:
-                # Progress bar calculation (simple version)
-                filled = int((index + 1) / total_count * 10)
-                bar = "🟢" * filled + "⚪" * (10 - filled)
+            # 6. TELEMETRY: UI Refresh every 5 users or at the final user
+            current_pos = index + 1
+            if current_pos % 5 == 0 or current_pos == total_count:
+                # Progress bar calculation
+                filled_slots = int((current_pos / total_count) * 10)
+                bar = "🟢" * filled_slots + "⚪" * (10 - filled_slots)
                 
                 progress_ui = (
-                    f"🚀 <b>Vinzy Engine Activity</b>\n{UI_LINE}\n"
-                    f"📊 <b>Progress:</b> {index + 1}/{total_count}\n<code>{bar}</code>\n\n"
-                    f"✅ Success: <code>{success}</code> | ❌ Restricted: <code>{fail}</code>\n"
-                    f"🛡️ <b>Stealth:</b> Active (V8.8)"
+                    f"🚀 <b>Vinzy Engine Activity</b>\n"
+                    f"{UI_LINE}\n"
+                    f"📊 <b>Progress:</b> {current_pos}/{total_count}\n"
+                    f"<code>{bar}</code>\n\n"
+                    f"✅ Success: <code>{success}</code>\n"
+                    f"❌ Restricted: <code>{fail}</code>\n\n"
+                    f"🛡️ <b>Stealth:</b> Active (V8.8 Node)"
                 )
-                await bot.edit_message_text(progress_ui, chat_id, status_msg.message_id, parse_mode="HTML")
+                
+                try:
+                    # Attempt to update the existing progress message
+                    await bot.edit_message_text(
+                        progress_ui, 
+                        chat_id, 
+                        status_msg.message_id, 
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    # If message was deleted or can't be edited, create a new reference
+                    status_msg = await bot.send_message(chat_id, progress_ui, parse_mode="HTML")
             
-            # FEATURE: Stealth Latency (35-65s) to bypass 2026 detection
-            if (index + 1) < total_count:
-                await asyncio.sleep(random.randint(35, 65))
+            # 7. STEALTH LATENCY: Anti-Detection Delay
+            # Only sleep if there are more users remaining in the list
+            if current_pos < total_count:
+                # We use random intervals to simulate human clicking behavior
+                wait_time = random.randint(35, 65)
+                logger.info(f"Stealth Mode: Sleeping for {wait_time}s to bypass 2026 detection.")
+                await asyncio.sleep(wait_time)
 
-        # PHASE 3: Mission Finalization
+        # =========================================================================
+        # --- PHASE 3: MISSION FINALIZATION ---
+        # =========================================================================
         final_report = (
             f"🏁 <b>Mission Accomplished!</b>\n"
             f"{UI_LINE}\n"
